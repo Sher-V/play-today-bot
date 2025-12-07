@@ -37,12 +37,14 @@ interface SlotsData {
 
 // Cloud Storage настройки
 const BUCKET_NAME = process.env.GCS_BUCKET;
+const USE_PROD_ACTUAL_SLOTS = process.env.USE_PROD_ACTUAL_SLOTS === 'true';
 const TENNIS_SLOTS_FILE = 'actual-tennis-slots.json';
 const PADEL_SLOTS_FILE = 'actual-padel-slots.json';
 const TENNIS_LOCAL_SLOTS_PATH = path.join(process.cwd(), TENNIS_SLOTS_FILE);
 const PADEL_LOCAL_SLOTS_PATH = path.join(process.cwd(), PADEL_SLOTS_FILE);
-const USE_LOCAL_STORAGE = !BUCKET_NAME;
-const storage = BUCKET_NAME ? new Storage() : null;
+// Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage (требуется BUCKET_NAME)
+const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
+const storage = (USE_PROD_ACTUAL_SLOTS || BUCKET_NAME) ? new Storage() : null;
 
 // Названия площадок для отображения (теннис)
 const TENNIS_COURT_NAMES: Record<string, string> = {
@@ -326,6 +328,28 @@ async function loadSlots(sport: 'tennis' | 'padel' = 'tennis'): Promise<SlotsDat
     const fileName = sport === 'padel' ? PADEL_SLOTS_FILE : TENNIS_SLOTS_FILE;
     const localPath = sport === 'padel' ? PADEL_LOCAL_SLOTS_PATH : TENNIS_LOCAL_SLOTS_PATH;
     
+    // Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage
+    if (USE_PROD_ACTUAL_SLOTS) {
+      if (!BUCKET_NAME) {
+        console.error('USE_PROD_ACTUAL_SLOTS=true требует GCS_BUCKET в переменных окружения');
+        return null;
+      }
+      
+      // Загружаем из Cloud Storage
+      const bucket = storage!.bucket(BUCKET_NAME);
+      const file = bucket.file(fileName);
+      
+      const [exists] = await file.exists();
+      if (!exists) {
+        console.error(`Файл слотов не найден в Cloud Storage: ${fileName}`);
+        return null;
+      }
+      
+      const [contents] = await file.download();
+      return JSON.parse(contents.toString());
+    }
+    
+    // Обычная логика: локальное хранилище или Cloud Storage
     if (USE_LOCAL_STORAGE) {
       // Загружаем из локального файла
       if (!fs.existsSync(localPath)) {
