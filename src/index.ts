@@ -620,12 +620,123 @@ function formatLastUpdatedTime(lastUpdated: string): string {
 }
 
 /**
- * Форматирует слоты для отображения пользователю
+ * Отправляет массив сообщений, разбивая длинные сообщения на части
+ * Первое сообщение редактируется, если есть messageId, остальные отправляются как новые
  */
-function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: Slot[] }[], sport: 'tennis' | 'padel' = 'tennis', lastUpdated?: string, prefix?: string): string {
+async function sendMessages(
+  chatId: number,
+  messages: string[],
+  options?: {
+    messageId?: number;
+    parseMode?: 'Markdown' | 'HTML';
+    disableWebPagePreview?: boolean;
+    replyMarkup?: TelegramBot.InlineKeyboardMarkup;
+  }
+): Promise<void> {
+  if (messages.length === 0) return;
+
+  // Разбиваем каждое сообщение на части, если оно слишком длинное
+  const allParts: string[] = [];
+  for (const msg of messages) {
+    const parts = splitLongMessage(msg);
+    allParts.push(...parts);
+  }
+
+  // Отправляем первое сообщение
+  if (allParts.length > 0) {
+    const firstMessage = allParts[0];
+    const remainingParts = allParts.slice(1);
+
+    if (options?.messageId) {
+      // Редактируем существующее сообщение
+      await safeEditMessageText(firstMessage, {
+        chat_id: chatId,
+        message_id: options.messageId,
+        parse_mode: options.parseMode,
+        disable_web_page_preview: options.disableWebPagePreview,
+        // Клавиатуру добавляем только если это последнее сообщение
+        reply_markup: remainingParts.length === 0 ? options.replyMarkup : undefined
+      });
+    } else {
+      // Отправляем новое сообщение
+      await getBot().sendMessage(chatId, firstMessage, {
+        parse_mode: options?.parseMode,
+        disable_web_page_preview: options?.disableWebPagePreview,
+        reply_markup: remainingParts.length === 0 ? options?.replyMarkup : undefined
+      });
+    }
+
+    // Отправляем остальные части
+    for (let i = 0; i < remainingParts.length; i++) {
+      const isLast = i === remainingParts.length - 1;
+      await getBot().sendMessage(chatId, remainingParts[i], {
+        parse_mode: options?.parseMode,
+        disable_web_page_preview: options?.disableWebPagePreview,
+        reply_markup: isLast ? options?.replyMarkup : undefined
+      });
+    }
+  }
+}
+
+/**
+ * Разбивает длинное сообщение на части по лимиту Telegram (4096 символов)
+ * Старается не разрывать структуру (не разрывает корты посередине)
+ */
+function splitLongMessage(message: string, maxLength: number = 4096): string[] {
+  if (message.length <= maxLength) {
+    return [message];
+  }
+
+  const parts: string[] = [];
+  const lines = message.split('\n');
+  let currentPart = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineWithNewline = line + '\n';
+
+    // Если одна строка уже превышает лимит, разбиваем её
+    if (line.length > maxLength) {
+      // Если текущая часть не пуста, сохраняем её
+      if (currentPart.trim()) {
+        parts.push(currentPart.trim());
+        currentPart = '';
+      }
+      // Разбиваем длинную строку на части (оставляем запас в 50 символов)
+      for (let j = 0; j < line.length; j += maxLength - 50) {
+        parts.push(line.substring(j, j + maxLength - 50));
+      }
+      continue;
+    }
+
+    // Проверяем, поместится ли строка в текущую часть
+    if (currentPart.length + lineWithNewline.length > maxLength) {
+      // Сохраняем текущую часть и начинаем новую
+      if (currentPart.trim()) {
+        parts.push(currentPart.trim());
+      }
+      currentPart = lineWithNewline;
+    } else {
+      currentPart += lineWithNewline;
+    }
+  }
+
+  // Добавляем последнюю часть, если она не пуста
+  if (currentPart.trim()) {
+    parts.push(currentPart.trim());
+  }
+
+  return parts.length > 0 ? parts : [message];
+}
+
+/**
+ * Форматирует слоты для отображения пользователю
+ * Возвращает массив сообщений, если сообщение слишком длинное
+ */
+function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: Slot[] }[], sport: 'tennis' | 'padel' = 'tennis', lastUpdated?: string, prefix?: string): string[] {
   if (siteSlots.length === 0) {
     const emoji = sport === 'padel' ? '🏓' : '🎾';
-    return `${emoji} На ${date} свободных кортов не найдено.`;
+    return [`${emoji} На ${date} свободных кортов не найдено.`];
   }
   
   const emoji = sport === 'padel' ? '🏓' : '🎾';
@@ -730,7 +841,8 @@ function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: 
     }
   }
   
-  return message;
+  // Разбиваем сообщение на части, если оно слишком длинное
+  return splitLongMessage(message);
 }
 
 // Генерация клавиатуры для выбора районов
@@ -1165,33 +1277,22 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           
           if (allSlotsWithoutFilters.length > 0) {
             // Показываем альтернативные варианты
-            const message = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated);
-            const alternativeMessage = `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо ниже написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨\n\n${message}`;
+            const messages = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated);
+            const prefix = `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо ниже написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨`;
             const messageId = query.message?.message_id;
-            if (messageId) {
-              await safeEditMessageText(alternativeMessage, { 
-                chat_id: chatId,
-                message_id: messageId,
-                parse_mode: 'Markdown',
-                disable_web_page_preview: true,
-                reply_markup: {
-                  inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-                }
-              });
-            } else {
-              // Fallback на sendMessage, если message_id недоступен
-              await getBot().sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
-              await getBot().sendMessage(
-                chatId,
-                `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо выше написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨`,
-                { 
-                  parse_mode: 'Markdown',
-                  reply_markup: {
-                    inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-                  }
-                }
-              );
-            }
+            
+            // Объединяем префикс с первым сообщением
+            // Если первое сообщение слишком длинное, префикс может не поместиться, поэтому используем formatSlotsMessage с prefix
+            const messagesWithPrefix = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated, prefix);
+            
+            await sendMessages(chatId, messagesWithPrefix, {
+              messageId: messageId,
+              parseMode: 'Markdown',
+              disableWebPagePreview: true,
+              replyMarkup: {
+                inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
+              }
+            });
           } else {
             // Даже без фильтров ничего нет
             const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
@@ -1220,30 +1321,19 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             await getBot().sendMessage(chatId, errorMessage, { parse_mode: 'Markdown' });
           }
         }
-      } else {
-        const message = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
-        const messageId = query.message?.message_id;
-        if (messageId) {
-          await safeEditMessageText(message, { 
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: 'Markdown', 
-            disable_web_page_preview: true,
-            reply_markup: {
-              inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-            }
-          });
         } else {
-          // Fallback на sendMessage, если message_id недоступен
-          await getBot().sendMessage(chatId, message, { 
-            parse_mode: 'Markdown', 
-            disable_web_page_preview: true,
-            reply_markup: {
+          const messages = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
+          const messageId = query.message?.message_id;
+          
+          await sendMessages(chatId, messages, {
+            messageId: messageId,
+            parseMode: 'Markdown',
+            disableWebPagePreview: true,
+            replyMarkup: {
               inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
             }
           });
         }
-      }
       
       // Очищаем состояние поиска
       searchStates.delete(userId);
