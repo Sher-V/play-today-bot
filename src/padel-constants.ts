@@ -62,7 +62,7 @@ export const PADEL_COURT_METRO: Record<string, string> = {
   [PadelSiteId.BUENOS_PADEL]: "Савеловская",
   [PadelSiteId.PADEL_BELOZER]: "Белозерская",
   [PadelSiteId.UP2_PADEL]: "Южная",
-  [PadelSiteId.BANDEHAARENACLUB]: "Октябрьское поле",
+  [PadelSiteId.BANDEHAARENACLUB]: "Мякинино",
   [PadelSiteId.ORBITA_TENNIS]: "Юго-Западная",
   [PadelSiteId.V_PADEL]: "Петровско-Разумовская",
   [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи"
