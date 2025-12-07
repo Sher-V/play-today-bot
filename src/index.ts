@@ -237,6 +237,77 @@ function getBot(): TelegramBot {
   return bot;
 }
 
+/**
+ * Безопасное обновление текста сообщения
+ * Игнорирует ошибку "message is not modified"
+ */
+async function safeEditMessageText(
+  text: string,
+  options: TelegramBot.EditMessageTextOptions
+): Promise<TelegramBot.Message | boolean> {
+  try {
+    return await getBot().editMessageText(text, options);
+  } catch (error: any) {
+    // Игнорируем ошибку, если сообщение не изменилось
+    const errorMessage = error?.response?.body?.description || error?.message || String(error);
+    if (errorMessage.includes('message is not modified')) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Безопасное обновление разметки сообщения
+ * Игнорирует ошибку "message is not modified"
+ */
+async function safeEditMessageReplyMarkup(
+  markup: TelegramBot.InlineKeyboardMarkup,
+  options: TelegramBot.EditMessageReplyMarkupOptions
+): Promise<TelegramBot.Message | boolean> {
+  try {
+    return await getBot().editMessageReplyMarkup(markup, options);
+  } catch (error: any) {
+    // Игнорируем ошибку, если сообщение не изменилось
+    const errorMessage = error?.response?.body?.description || error?.message || String(error);
+    if (errorMessage.includes('message is not modified')) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Безопасный ответ на callback query
+ * Игнорирует ошибки "query is too old" и "query ID is invalid"
+ */
+async function safeAnswerCallbackQuery(
+  queryId: string,
+  options?: Omit<TelegramBot.AnswerCallbackQueryOptions, 'callback_query_id'>
+): Promise<boolean> {
+  try {
+    return await getBot().answerCallbackQuery(queryId, options);
+  } catch (error: any) {
+    // Игнорируем ошибки, связанные с истекшими или невалидными query
+    const errorMessage = error?.response?.body?.description || error?.message || String(error);
+    if (
+      errorMessage.includes('query is too old') ||
+      errorMessage.includes('query ID is invalid') ||
+      errorMessage.includes('response timeout expired')
+    ) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+// Хранилище обработанных callback queries для предотвращения повторной обработки
+const processedQueries = new Set<string>();
+// Очищаем старые записи каждые 5 минут (300000 мс)
+setInterval(() => {
+  processedQueries.clear();
+}, 300000);
+
 // Временное хранилище пользователей (в памяти)
 // ⚠️ Важно: для production нужно использовать Firestore или другую БД,
 // так как Cloud Functions не сохраняет состояние между вызовами
@@ -969,12 +1040,19 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   if (!chatId) return;
 
+  // Проверяем, не обрабатывали ли мы уже этот callback query
+  if (processedQueries.has(query.id)) {
+    // Отвечаем на дубликат, но не обрабатываем его
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Помечаем query как обработанный
+  processedQueries.add(query.id);
+
   // Отвечаем на callback query сразу, до любых долгих операций
   // Это важно, чтобы избежать ошибки "query is too old"
-  await getBot().answerCallbackQuery(query.id).catch(err => {
-    // Логируем ошибку, но продолжаем выполнение
-    console.error('Error answering callback query:', err);
-  });
+  await safeAnswerCallbackQuery(query.id);
 
   // Отслеживаем клик на кнопку (не блокируем выполнение)
   if (data) {
@@ -1045,7 +1123,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Кнопка "Готово"
     if (locationId === 'done') {
       if (searchState.selectedLocations.length === 0) {
-        await getBot().answerCallbackQuery(query.id, { text: 'Выбери хотя бы одну локацию или "Не важно"!' });
+        await safeAnswerCallbackQuery(query.id, { text: 'Выбери хотя бы одну локацию или "Не важно"!' });
         return;
       }
       
@@ -1068,7 +1146,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       // Форматируем и отправляем сообщение
       const emoji = searchState.sport === 'padel' ? '🏓' : '🎾';
-      await getBot().editMessageText(
+      await safeEditMessageText(
         `${emoji} Ищем корты на ${searchState.dateStr}...`,
         { chat_id: chatId, message_id: query.message?.message_id }
       );
@@ -1091,7 +1169,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             const alternativeMessage = `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо ниже написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨\n\n${message}`;
             const messageId = query.message?.message_id;
             if (messageId) {
-              await getBot().editMessageText(alternativeMessage, { 
+              await safeEditMessageText(alternativeMessage, { 
                 chat_id: chatId,
                 message_id: messageId,
                 parse_mode: 'Markdown',
@@ -1119,7 +1197,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
             const messageId = query.message?.message_id;
             if (messageId) {
-              await getBot().editMessageText(errorMessage, {
+              await safeEditMessageText(errorMessage, {
                 chat_id: chatId,
                 message_id: messageId,
                 parse_mode: 'Markdown'
@@ -1133,7 +1211,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
           const messageId = query.message?.message_id;
           if (messageId) {
-            await getBot().editMessageText(errorMessage, {
+            await safeEditMessageText(errorMessage, {
               chat_id: chatId,
               message_id: messageId,
               parse_mode: 'Markdown'
@@ -1146,7 +1224,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         const message = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText(message, { 
+          await safeEditMessageText(message, { 
             chat_id: chatId,
             message_id: messageId,
             parse_mode: 'Markdown', 
@@ -1196,7 +1274,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     searchStates.set(userId, searchState);
     
     // Обновляем клавиатуру
-    await getBot().editMessageReplyMarkup(
+    await safeEditMessageReplyMarkup(
       { inline_keyboard: getLocationKeyboard(searchState.selectedLocations) },
       { chat_id: chatId, message_id: query.message?.message_id }
     );
@@ -1216,12 +1294,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Кнопка "Готово"
     if (timeId === 'done') {
       if (searchState.selectedTimeSlots.length === 0) {
-        await getBot().answerCallbackQuery(query.id, { text: 'Выбери хотя бы одно время или "Не важно"!' });
+        await safeAnswerCallbackQuery(query.id, { text: 'Выбери хотя бы одно время или "Не важно"!' });
         return;
       }
       
       // Показываем выбор локации
-      await getBot().editMessageText('📍 В какой локации ищем корт?', {
+      await safeEditMessageText('📍 В какой локации ищем корт?', {
         chat_id: chatId,
         message_id: query.message?.message_id,
         reply_markup: {
@@ -1258,7 +1336,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const availableTimeOptions = getAvailableTimeOptions(searchState.date);
     
     // Обновляем клавиатуру
-    await getBot().editMessageReplyMarkup(
+    await safeEditMessageReplyMarkup(
       { inline_keyboard: getTimeKeyboard(searchState.selectedTimeSlots, availableTimeOptions) },
       { chat_id: chatId, message_id: query.message?.message_id }
     );
@@ -1274,7 +1352,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Кнопка "Готово"
     if (districtId === 'done') {
       if (selected.length === 0) {
-        await getBot().answerCallbackQuery(query.id, { text: 'Выбери хотя бы один район!' });
+        await safeAnswerCallbackQuery(query.id, { text: 'Выбери хотя бы один район!' });
         return;
       }
 
@@ -1283,7 +1361,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       ).filter(Boolean);
 
       // Первое сообщение - редактируем текущее
-      await getBot().editMessageText(
+      await safeEditMessageText(
         `📍 Районы: ${selectedLabels.join(', ')}`,
         { chat_id: chatId, message_id: query.message?.message_id }
       );
@@ -1325,7 +1403,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     users.set(userId, profile);
 
     // Обновляем клавиатуру
-    await getBot().editMessageReplyMarkup(
+    await safeEditMessageReplyMarkup(
       { inline_keyboard: getDistrictKeyboard(profile.districts || []) },
       { chat_id: chatId, message_id: query.message?.message_id }
     );
@@ -1336,7 +1414,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data === 'action_find_court') {
     const messageId = query.message?.message_id;
     if (messageId) {
-      await getBot().editMessageText('📅 На какую дату ищем корт?', {
+      await safeEditMessageText('📅 На какую дату ищем корт?', {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
@@ -1456,7 +1534,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText('📍 В какой локации ищем корт?', {
+          await safeEditMessageText('📍 В какой локации ищем корт?', {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1477,7 +1555,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         // Редактируем сообщение с выбором времени
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText('⏰ В какое время ищем корт?', {
+          await safeEditMessageText('⏰ В какое время ищем корт?', {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1529,7 +1607,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText('📍 В какой локации ищем корт?', {
+          await safeEditMessageText('📍 В какой локации ищем корт?', {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1550,7 +1628,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         // Редактируем сообщение с выбором времени
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText('⏰ В какое время ищем корт?', {
+          await safeEditMessageText('⏰ В какое время ищем корт?', {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1572,7 +1650,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       if (!slotsData) {
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText('❌ Не удалось загрузить данные о кортах. Попробуй позже.', {
+          await safeEditMessageText('❌ Не удалось загрузить данные о кортах. Попробуй позже.', {
             chat_id: chatId,
             message_id: messageId
           });
@@ -1586,7 +1664,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       if (availableDates.length === 0) {
         const messageId = query.message?.message_id;
         if (messageId) {
-          await getBot().editMessageText('😔 Нет доступных дат для бронирования.', {
+          await safeEditMessageText('😔 Нет доступных дат для бронирования.', {
             chat_id: chatId,
             message_id: messageId
           });
@@ -1614,7 +1692,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const messageId = query.message?.message_id;
       if (messageId) {
         try {
-          await getBot().editMessageText('📅 Выбери дату:', {
+          await safeEditMessageText('📅 Выбери дату:', {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1648,7 +1726,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     const messageId = query.message?.message_id;
     if (messageId) {
-      await getBot().editMessageText('📅 На какую дату ищем корт?', {
+      await safeEditMessageText('📅 На какую дату ищем корт?', {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
