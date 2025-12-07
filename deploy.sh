@@ -45,13 +45,27 @@ echo "   Проект: $PROJECT_ID"
 echo "   Регион: $REGION"
 echo "   Функция: $FUNCTION_NAME"
 
+# Подготовка переменных окружения
+ENV_VARS="BOT_TOKEN=$BOT_TOKEN,GCS_BUCKET=$BUCKET_NAME"
+
+# Опционально: добавляем BigQuery переменные, если они заданы
+if [ ! -z "$USE_BIGQUERY" ]; then
+    ENV_VARS="$ENV_VARS,USE_BIGQUERY=$USE_BIGQUERY"
+fi
+if [ ! -z "$BIGQUERY_DATASET" ]; then
+    ENV_VARS="$ENV_VARS,BIGQUERY_DATASET=$BIGQUERY_DATASET"
+fi
+if [ ! -z "$BIGQUERY_TABLE" ]; then
+    ENV_VARS="$ENV_VARS,BIGQUERY_TABLE=$BIGQUERY_TABLE"
+fi
+
 gcloud functions deploy $FUNCTION_NAME \
     --gen2 \
     --runtime=nodejs20 \
     --trigger-http \
     --allow-unauthenticated \
     --entry-point=telegramWebhook \
-    --set-env-vars "BOT_TOKEN=$BOT_TOKEN,GCS_BUCKET=$BUCKET_NAME" \
+    --set-env-vars "$ENV_VARS" \
     --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
     --region=$REGION \
     --source=. \

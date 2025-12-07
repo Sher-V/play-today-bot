@@ -1,0 +1,121 @@
+{
+    "data": [
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "5828afca24b56a1a0d201eaef3bc6dd1",
+            "attributes": {
+                "datetime": "2025-12-06T16:30:00+03:00",
+                "time": "16:30",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "0e090a2d2031042713df4c216daa0201",
+            "attributes": {
+                "datetime": "2025-12-06T17:00:00+03:00",
+                "time": "17:00",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "526f38a8179b3291db345b71533f01da",
+            "attributes": {
+                "datetime": "2025-12-06T17:30:00+03:00",
+                "time": "17:30",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "370201a5a89d15d3df63d0cd0fb94010",
+            "attributes": {
+                "datetime": "2025-12-06T18:00:00+03:00",
+                "time": "18:00",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "4f25d3885320cd8ece8e0a7b52f2a1ab",
+            "attributes": {
+                "datetime": "2025-12-06T18:30:00+03:00",
+                "time": "18:30",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "4d12789eae5b6dbe965502ca98dafd40",
+            "attributes": {
+                "datetime": "2025-12-06T19:00:00+03:00",
+                "time": "19:00",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "fe6ff84f6d22334560cf6fa762513a87",
+            "attributes": {
+                "datetime": "2025-12-06T19:30:00+03:00",
+                "time": "19:30",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "6ddc3c23483147d25e34d0a37b745fc3",
+            "attributes": {
+                "datetime": "2025-12-06T20:00:00+03:00",
+                "time": "20:00",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "47f83f59c374ece73fc9bc257205be96",
+            "attributes": {
+                "datetime": "2025-12-06T20:30:00+03:00",
+                "time": "20:30",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "7d1f7d0bcd546c1163ef0224433dc369",
+            "attributes": {
+                "datetime": "2025-12-06T21:00:00+03:00",
+                "time": "21:00",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "c78379bd509ec87d80949af722f9e15d",
+            "attributes": {
+                "datetime": "2025-12-06T21:30:00+03:00",
+                "time": "21:30",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "beabd425ba33d5ef947bd99407d38281",
+            "attributes": {
+                "datetime": "2025-12-06T22:00:00+03:00",
+                "time": "22:00",
+                "is_bookable": true
+            }
+        },
+        {
+            "type": "booking_search_result_timeslots",
+            "id": "95e9bd9a445d359867e69b02f688d00b",
+            "attributes": {
+                "datetime": "2025-12-06T22:30:00+03:00",
+                "time": "22:30",
+                "is_bookable": true
+            }
+        }
+    ]
+}

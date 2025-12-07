@@ -60,11 +60,12 @@ echo "✅ Деплой функции завершён!"
 echo ""
 echo "🔗 URL функции: $FUNCTION_URL"
 echo ""
-echo "📌 Теперь настрой Cloud Scheduler для запуска каждые 20 минут:"
+echo "📌 Теперь настрой Cloud Scheduler для запуска каждые 20 минут с 8:00 до 21:00 МСК:"
 echo ""
 echo "gcloud scheduler jobs create http slots-fetcher-job \\"
 echo "    --location=$REGION \\"
-echo "    --schedule='*/20 * * * *' \\"
+echo "    --schedule='*/20 8-21 * * *' \\"
+echo "    --time-zone='Europe/Moscow' \\"
 echo "    --uri='$FUNCTION_URL' \\"
 echo "    --http-method=POST \\"
 echo "    --oidc-service-account-email=${PROJECT_ID}@appspot.gserviceaccount.com"
@@ -87,13 +88,14 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     # Создаём новый job
     gcloud scheduler jobs create http slots-fetcher-job \
         --location=$REGION \
-        --schedule='*/20 * * * *' \
+        --schedule='*/20 8-21 * * *' \
+        --time-zone='Europe/Moscow' \
         --uri="$FUNCTION_URL" \
         --http-method=POST \
         --attempt-deadline=120s
     
     echo "✅ Cloud Scheduler job создан!"
-    echo "   Расписание: каждые 20 минут"
+    echo "   Расписание: каждые 20 минут с 8:00 до 21:00 МСК"
 fi
 
 echo ""

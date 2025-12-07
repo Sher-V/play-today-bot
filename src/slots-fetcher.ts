@@ -17,8 +17,10 @@ interface CloudFunctionResponse extends ServerResponse {
 
 // Cloud Storage настройки
 const BUCKET_NAME = process.env.GCS_BUCKET;  // Если не задан — используем локальный файл
-const SLOTS_FILE = 'actual-slots.json';
-const LOCAL_SLOTS_PATH = path.join(process.cwd(), SLOTS_FILE);
+const TENNIS_SLOTS_FILE = 'actual-tennis-slots.json';
+const PADEL_SLOTS_FILE = 'actual-padel-slots.json';
+const TENNIS_LOCAL_SLOTS_PATH = path.join(process.cwd(), TENNIS_SLOTS_FILE);
+const PADEL_LOCAL_SLOTS_PATH = path.join(process.cwd(), PADEL_SLOTS_FILE);
 
 // Режим работы: Cloud Storage или локальный файл
 const USE_LOCAL_STORAGE = !BUCKET_NAME;
@@ -128,7 +130,7 @@ const SITE_CONFIGS: SiteConfig[] = [
   },
 ];
 
-// ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) ⬇️
+// ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ТЕННИС ⬇️
 const YCLIENTS_CONFIGS: YClientsConfig[] = [
   {
     name: "pro-tennis-kashirka",
@@ -174,6 +176,118 @@ const YCLIENTS_CONFIGS: YClientsConfig[] = [
       3300652: "Корт 6",
       3057405: "Корт 7"
     }
+  },
+];
+
+// ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ПАДЕЛ ⬇️
+const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
+  {
+    name: "rocket-padel-club",
+    locationId: 1478703,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://n1647756.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null,
+    staffId: -1  // Используем staff_id: -1 как в примере запроса
+  },
+  {
+    name: "padel-friends",
+    locationId: 804153,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b861100.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null,
+    staffId: -1  // Используем staff_id: -1 как в примере запроса
+  },
+  {
+    name: "buenos-padel",
+    locationId: 1457979,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1555275.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    staffIds: {
+      4268232: "Корт 1",
+      4486944: "Корт 2",
+      4486947: "Корт 3",
+      4486950: "Корт 4",
+      4486953: "Корт 5",
+      4486956: "Корт 6",
+      4486965: "Корт 7",
+      4486974: "Корт 8"
+    }
+  },
+  {
+    name: "padel-belozer",
+    locationId: 1583670,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1781322.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null,
+    staffId: -1  // Используем staff_id: -1 как в примере запроса
+  },
+  {
+    name: "tennis-capital-padel-savelovskaya",
+    locationId: 1450185,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1776180.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null
+    // staffId не задан (undefined) - поле staff_id не будет включено в запрос
+  },
+  {
+    name: "tennis-capital-padel-vdnh",
+    locationId: 1553949,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1776180.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null
+    // staffId не задан (undefined) - поле staff_id не будет включено в запрос
+  },
+  {
+    name: "up2-padel",
+    locationId: 1288180,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://n1422626.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null
+    // staffId не задан (undefined) - поле staff_id не будет включено в запрос
+  },
+  {
+    name: "bandehaarenaclub",
+    locationId: 1449294,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://n1612373.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null
+    // staffId не задан (undefined) - поле staff_id не будет включено в запрос
+  },
+  {
+    name: "orbita-tennis",
+    locationId: 1066130,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1159028.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null,
+    staffId: -1  // Используем staff_id: -1 как в примере запроса
+  },
+  {
+    name: "v-padel",
+    locationId: 1441312,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://n1602942.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    roomName: null,
+    staffId: -1  // Используем staff_id: -1 как в примере запроса
   },
 ];
 
@@ -271,19 +385,19 @@ const API_URL = 'https://reservi.ru/api-fit1c/json/v2/';
 /**
  * Сохраняет данные в Cloud Storage или локальный файл
  */
-async function saveToStorage(data: AllSlotsResult): Promise<string> {
+async function saveToStorage(data: AllSlotsResult, fileName: string, localPath: string): Promise<string> {
   const jsonData = JSON.stringify(data, null, 2);
   
   if (USE_LOCAL_STORAGE) {
     // Локальный режим — сохраняем в файл
-    fs.writeFileSync(LOCAL_SLOTS_PATH, jsonData, 'utf-8');
-    console.log(`💾 Saved to local file: ${LOCAL_SLOTS_PATH}`);
-    return `file://${LOCAL_SLOTS_PATH}`;
+    fs.writeFileSync(localPath, jsonData, 'utf-8');
+    console.log(`💾 Saved to local file: ${localPath}`);
+    return `file://${localPath}`;
   }
   
   // Cloud Storage
   const bucket = storage!.bucket(BUCKET_NAME!);
-  const file = bucket.file(SLOTS_FILE);
+  const file = bucket.file(fileName);
   
   await file.save(jsonData, {
     contentType: 'application/json',
@@ -292,27 +406,27 @@ async function saveToStorage(data: AllSlotsResult): Promise<string> {
     }
   });
   
-  console.log(`☁️ Saved to gs://${BUCKET_NAME}/${SLOTS_FILE}`);
-  return `gs://${BUCKET_NAME}/${SLOTS_FILE}`;
+  console.log(`☁️ Saved to gs://${BUCKET_NAME}/${fileName}`);
+  return `gs://${BUCKET_NAME}/${fileName}`;
 }
 
 /**
  * Загружает данные из Cloud Storage или локального файла
  */
-async function loadFromStorage(): Promise<AllSlotsResult | null> {
+async function loadFromStorage(fileName: string, localPath: string): Promise<AllSlotsResult | null> {
   try {
     if (USE_LOCAL_STORAGE) {
       // Локальный режим — читаем из файла
-      if (!fs.existsSync(LOCAL_SLOTS_PATH)) {
+      if (!fs.existsSync(localPath)) {
         return null;
       }
-      const content = fs.readFileSync(LOCAL_SLOTS_PATH, 'utf-8');
+      const content = fs.readFileSync(localPath, 'utf-8');
       return JSON.parse(content) as AllSlotsResult;
     }
     
     // Cloud Storage
     const bucket = storage!.bucket(BUCKET_NAME!);
-    const file = bucket.file(SLOTS_FILE);
+    const file = bucket.file(fileName);
     
     const [exists] = await file.exists();
     if (!exists) {
@@ -580,14 +694,24 @@ function formatDateForYClients(daysFromNow: number): string {
 async function fetchYClientsSlotsForDayAndStaff(
   config: YClientsConfig, 
   dateStr: string, 
-  staffId: number | null, 
+  staffId: number | null | undefined, 
   roomName: string | null
 ): Promise<Slot[]> {
+  // Формируем объект записи: если staffId не задан (undefined), не включаем поле staff_id
+  const record: { attendance_service_items: unknown[]; staff_id?: number | null } = {
+    attendance_service_items: []
+  };
+  
+  // Добавляем staff_id только если он явно задан (не undefined)
+  if (staffId !== undefined) {
+    record.staff_id = staffId;
+  }
+  
   const requestBody = {
     context: { location_id: config.locationId },
     filter: {
       date: dateStr,
-      records: [{ staff_id: staffId, attendance_service_items: [] }]
+      records: [record]
     }
   };
 
@@ -666,7 +790,8 @@ async function fetchYClientsSlotsForDay(config: YClientsConfig, dateStr: string)
   }
   
   // Иначе используем одиночный staffId из конфига
-  const staffId = config.staffId !== undefined ? config.staffId : null;
+  // Если staffId не задан (undefined), передаем undefined, чтобы поле не включалось в запрос
+  const staffId = config.staffId;
   return fetchYClientsSlotsForDayAndStaff(config, dateStr, staffId, config.roomName || null);
 }
 
@@ -1135,9 +1260,9 @@ async function fetchFindSportSlotsForSite(config: FindSportConfig): Promise<Site
 // ============= ОБЩИЙ СБОР ДАННЫХ =============
 
 /**
- * Собирает слоты со всех сконфигурированных площадок
+ * Собирает слоты со всех сконфигурированных площадок для тенниса
  */
-async function fetchAllSlots(): Promise<AllSlotsResult> {
+async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
   const result: AllSlotsResult = {
     lastUpdated: new Date().toISOString(),
     sites: {}
@@ -1155,7 +1280,7 @@ async function fetchAllSlots(): Promise<AllSlotsResult> {
     }
   }
   
-  // YClients
+  // YClients (теннис)
   for (const config of YCLIENTS_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (yclients)`);
@@ -1207,38 +1332,86 @@ async function fetchAllSlots(): Promise<AllSlotsResult> {
 }
 
 /**
+ * Собирает слоты со всех сконфигурированных площадок для падела
+ */
+async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
+  const result: AllSlotsResult = {
+    lastUpdated: new Date().toISOString(),
+    sites: {}
+  };
+  
+  // YClients (падел)
+  for (const config of YCLIENTS_PADEL_CONFIGS) {
+    try {
+      console.log(`Fetching slots for: ${config.name} (yclients)`);
+      result.sites[config.name] = await fetchYClientsSlotsForSite(config);
+      console.log(`✅ Successfully fetched ${config.name}`);
+    } catch (error) {
+      console.error(`Error fetching ${config.name}:`, error);
+      result.sites[config.name] = {};
+    }
+  }
+  
+  return result;
+}
+
+/**
  * Cloud Function для сбора слотов
  * POST - запустить сбор и сохранить в Cloud Storage
  * GET - получить данные из Cloud Storage
+ * Поддерживает параметр ?sport=tennis|padel для выбора типа спорта
  */
 export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunctionResponse) => {
   try {
+    // Определяем тип спорта из query параметра или body
+    let sport = 'tennis';
+    if (req.url) {
+      try {
+        const url = new URL(req.url, 'http://localhost');
+        const sportParam = url.searchParams.get('sport');
+        if (sportParam === 'padel' || sportParam === 'tennis') {
+          sport = sportParam;
+        }
+      } catch (e) {
+        // Если не удалось распарсить URL, пробуем из body
+        const body = req.body as { sport?: string } | undefined;
+        if (body?.sport === 'padel' || body?.sport === 'tennis') {
+          sport = body.sport;
+        }
+      }
+    } else {
+      // Если нет URL, пробуем из body
+      const body = req.body as { sport?: string } | undefined;
+      if (body?.sport === 'padel' || body?.sport === 'tennis') {
+        sport = body.sport;
+      }
+    }
+    
+    const isPadel = sport === 'padel';
+    const fileName = isPadel ? PADEL_SLOTS_FILE : TENNIS_SLOTS_FILE;
+    const localPath = isPadel ? PADEL_LOCAL_SLOTS_PATH : TENNIS_LOCAL_SLOTS_PATH;
+    
     // GET - возвращаем данные из Cloud Storage
     if (req.method === 'GET') {
-      const data = await loadFromStorage();
+      const data = await loadFromStorage(fileName, localPath);
       if (data) {
         res.status(200).json(data);
       } else {
-        res.status(200).json({ message: 'No data yet. Trigger POST to fetch.' });
+        res.status(200).json({ message: `No ${sport} data yet. Trigger POST to fetch.` });
       }
       return;
     }
     
     // POST - собираем данные и сохраняем
     if (req.method === 'POST') {
-      console.log('Starting slots fetch...');
+      console.log(`Starting ${sport} slots fetch...`);
       
-      if (SITE_CONFIGS.length === 0) {
-        res.status(400).json({ 
-          error: 'No site configurations defined. Please fill SITE_CONFIGS array.' 
-        });
-        return;
-      }
-      
-      const slotsData = await fetchAllSlots();
+      const slotsData = isPadel 
+        ? await fetchAllPadelSlots()
+        : await fetchAllTennisSlots();
       
       // Сохраняем в Storage (Cloud или локальный файл)
-      const storagePath = await saveToStorage(slotsData);
+      const storagePath = await saveToStorage(slotsData, fileName, localPath);
       
       // Считаем статистику
       const siteCount = Object.keys(slotsData.sites).length;
@@ -1249,10 +1422,11 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
         }
       }
       
-      console.log(`Fetched ${totalSlots} slots from ${siteCount} sites`);
+      console.log(`Fetched ${totalSlots} ${sport} slots from ${siteCount} sites`);
       
       res.status(200).json({
         success: true,
+        sport,
         lastUpdated: slotsData.lastUpdated,
         sitesCount: siteCount,
         totalSlots,
