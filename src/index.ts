@@ -386,6 +386,11 @@ interface SearchState {
   sport: 'tennis' | 'padel';
   selectedLocations: string[];
   selectedTimeSlots: string[];
+  // Данные для пагинации
+  siteSlots?: { siteName: string; slots: Slot[] }[];
+  lastUpdated?: string;
+  currentPage?: number;
+  totalPages?: number;
 }
 const searchStates = new Map<number, SearchState>();
 
@@ -730,13 +735,44 @@ function splitLongMessage(message: string, maxLength: number = 4096): string[] {
 }
 
 /**
- * Форматирует слоты для отображения пользователю
- * Возвращает массив сообщений, если сообщение слишком длинное
+ * Вычисляет количество страниц для пагинации
  */
-function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: Slot[] }[], sport: 'tennis' | 'padel' = 'tennis', lastUpdated?: string, prefix?: string): string[] {
+function calculatePages(siteSlots: { siteName: string; slots: Slot[] }[], maxLength: number = 3500): number {
+  if (siteSlots.length === 0) return 1;
+  
+  let currentLength = 0;
+  let pages = 1;
+  
+  for (const { siteName, slots } of siteSlots) {
+    // Примерная длина одного корта (название + слоты)
+    const estimatedLength = 200 + (slots.length * 50);
+    
+    if (currentLength + estimatedLength > maxLength && currentLength > 0) {
+      pages++;
+      currentLength = estimatedLength;
+    } else {
+      currentLength += estimatedLength;
+    }
+  }
+  
+  return pages;
+}
+
+/**
+ * Форматирует одну страницу слотов для отображения пользователю
+ */
+function formatSlotsPage(
+  date: string,
+  siteSlots: { siteName: string; slots: Slot[] }[],
+  sport: 'tennis' | 'padel' = 'tennis',
+  page: number = 1,
+  pageSize: number = 5,
+  lastUpdated?: string,
+  prefix?: string
+): string {
   if (siteSlots.length === 0) {
     const emoji = sport === 'padel' ? '🏓' : '🎾';
-    return [`${emoji} На ${date} свободных кортов не найдено.`];
+    return `${emoji} На ${date} свободных кортов не найдено.`;
   }
   
   const emoji = sport === 'padel' ? '🏓' : '🎾';
@@ -753,7 +789,12 @@ function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: 
   }
   message += `${emoji} *Свободные корты на ${date}*\n\n`;
   
-  for (const { siteName, slots } of siteSlots) {
+  // Вычисляем, какие корты показывать на этой странице
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const pageSlots = siteSlots.slice(startIndex, endIndex);
+  
+  for (const { siteName, slots } of pageSlots) {
     const displayName = COURT_NAMES[siteName] || siteName;
     const metro = COURT_METRO[siteName];
     const district = COURT_DISTRICTS[siteName];
@@ -833,6 +874,12 @@ function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: 
     message += '\n';
   }
   
+  // Добавляем информацию о странице, если есть несколько страниц
+  const totalPages = Math.ceil(siteSlots.length / pageSize);
+  if (totalPages > 1) {
+    message += `\n\n📄 _Страница ${page} из ${totalPages}_`;
+  }
+  
   // Добавляем информацию об актуальности данных
   if (lastUpdated) {
     const formattedTime = formatLastUpdatedTime(lastUpdated);
@@ -841,8 +888,7 @@ function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: 
     }
   }
   
-  // Разбиваем сообщение на части, если оно слишком длинное
-  return splitLongMessage(message);
+  return message;
 }
 
 // Генерация клавиатуры для выбора районов
@@ -931,6 +977,39 @@ function getSelectAnotherDateKeyboard(sport: 'tennis' | 'padel'): TelegramBot.In
   return [
     [{ text: '📅 Выбрать другую дату', callback_data: `select_another_date_${sport}` }]
   ];
+}
+
+/**
+ * Генерация клавиатуры с пагинацией и кнопкой "Выбрать другую дату"
+ */
+function getPaginationKeyboard(
+  currentPage: number,
+  totalPages: number,
+  sport: 'tennis' | 'padel'
+): TelegramBot.InlineKeyboardButton[][] {
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  
+  // Кнопки пагинации
+  if (totalPages > 1) {
+    const paginationRow: TelegramBot.InlineKeyboardButton[] = [];
+    
+    if (currentPage > 1) {
+      paginationRow.push({ text: '◀️ Назад', callback_data: `page_${currentPage - 1}` });
+    }
+    
+    paginationRow.push({ text: `${currentPage}/${totalPages}`, callback_data: 'page_info' });
+    
+    if (currentPage < totalPages) {
+      paginationRow.push({ text: 'Вперед ▶️', callback_data: `page_${currentPage + 1}` });
+    }
+    
+    buttons.push(paginationRow);
+  }
+  
+  // Кнопка "Выбрать другую дату"
+  buttons.push([{ text: '📅 Выбрать другую дату', callback_data: `select_another_date_${sport}` }]);
+  
+  return buttons;
 }
 
 // Обработка команды /start
@@ -1277,22 +1356,50 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           
           if (allSlotsWithoutFilters.length > 0) {
             // Показываем альтернативные варианты
-            const messages = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated);
             const prefix = `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо ниже написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨`;
+            const pageSize = 5;
+            const totalPages = Math.ceil(allSlotsWithoutFilters.length / pageSize);
+            
+            // Сохраняем данные для пагинации
+            searchState.siteSlots = allSlotsWithoutFilters;
+            searchState.lastUpdated = slotsData.lastUpdated;
+            searchState.currentPage = 1;
+            searchState.totalPages = totalPages;
+            searchStates.set(userId, searchState);
+            
+            // Форматируем первую страницу с префиксом
+            const message = formatSlotsPage(
+              searchState.dateStr,
+              allSlotsWithoutFilters,
+              searchState.sport,
+              1,
+              pageSize,
+              slotsData.lastUpdated,
+              prefix
+            );
+            
             const messageId = query.message?.message_id;
             
-            // Объединяем префикс с первым сообщением
-            // Если первое сообщение слишком длинное, префикс может не поместиться, поэтому используем formatSlotsMessage с prefix
-            const messagesWithPrefix = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated, prefix);
-            
-            await sendMessages(chatId, messagesWithPrefix, {
-              messageId: messageId,
-              parseMode: 'Markdown',
-              disableWebPagePreview: true,
-              replyMarkup: {
-                inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-              }
-            });
+            // Отправляем сообщение с пагинацией
+            if (messageId) {
+              await safeEditMessageText(message, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true,
+                reply_markup: {
+                  inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                }
+              });
+            } else {
+              await getBot().sendMessage(chatId, message, {
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true,
+                reply_markup: {
+                  inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                }
+              });
+            }
           } else {
             // Даже без фильтров ничего нет
             const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
@@ -1322,21 +1429,51 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           }
         }
         } else {
-          const messages = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
+          // Сохраняем данные для пагинации
+          const pageSize = 5; // Количество кортов на странице
+          const totalPages = Math.ceil(filteredSlots.length / pageSize);
+          
+          searchState.siteSlots = filteredSlots;
+          searchState.lastUpdated = slotsData.lastUpdated;
+          searchState.currentPage = 1;
+          searchState.totalPages = totalPages;
+          searchStates.set(userId, searchState);
+          
+          // Форматируем первую страницу
+          const message = formatSlotsPage(
+            searchState.dateStr,
+            filteredSlots,
+            searchState.sport,
+            1,
+            pageSize,
+            slotsData.lastUpdated
+          );
+          
           const messageId = query.message?.message_id;
           
-          await sendMessages(chatId, messages, {
-            messageId: messageId,
-            parseMode: 'Markdown',
-            disableWebPagePreview: true,
-            replyMarkup: {
-              inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-            }
-          });
+          // Отправляем сообщение с пагинацией
+          if (messageId) {
+            await safeEditMessageText(message, {
+              chat_id: chatId,
+              message_id: messageId,
+              parse_mode: 'Markdown',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+              }
+            });
+          } else {
+            await getBot().sendMessage(chatId, message, {
+              parse_mode: 'Markdown',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+              }
+            });
+          }
         }
       
-      // Очищаем состояние поиска
-      searchStates.delete(userId);
+      // Не очищаем состояние поиска, чтобы пагинация работала
       return;
     }
     
@@ -1807,6 +1944,88 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         });
       }
     }
+    return;
+  }
+
+  // Обработка пагинации
+  if (data?.startsWith('page_')) {
+    const searchState = searchStates.get(userId);
+    if (!searchState || !searchState.siteSlots) {
+      await getBot().sendMessage(chatId, '❌ Сессия поиска истекла. Начни поиск заново.');
+      return;
+    }
+    
+    // Игнорируем клик на кнопку "page_info" (информация о странице)
+    if (data === 'page_info') {
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    
+    const page = parseInt(data.replace('page_', ''), 10);
+    if (isNaN(page) || page < 1 || (searchState.totalPages && page > searchState.totalPages)) {
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    
+    // Определяем направление пагинации
+    const currentPage = searchState.currentPage || 1;
+    const direction = page > currentPage ? 'forward' : page < currentPage ? 'backward' : 'same';
+    const buttonLabel = direction === 'forward' ? 'Вперед ▶️' : direction === 'backward' ? '◀️ Назад' : `${page}/${searchState.totalPages}`;
+    
+    // Отслеживаем клик на кнопку пагинации
+    trackButtonClick({
+      userId,
+      userName: query.from.first_name || query.from.username || undefined,
+      chatId,
+      buttonType: 'callback',
+      buttonId: data,
+      buttonLabel,
+      messageId: query.message?.message_id,
+      sessionId: generateSessionId(userId),
+      context: {
+        buttonType: 'pagination',
+        buttonAction: direction,
+        pageFrom: currentPage,
+        pageTo: page,
+        totalPages: searchState.totalPages || 1,
+        sport: searchState.sport,
+        date: searchState.date,
+        username: query.from.username,
+        languageCode: query.from.language_code,
+      },
+    }).catch(err => {
+      console.error('Error tracking pagination click:', err);
+    });
+    
+    // Обновляем текущую страницу
+    searchState.currentPage = page;
+    searchStates.set(userId, searchState);
+    
+    // Форматируем страницу
+    const pageSize = 5;
+    const message = formatSlotsPage(
+      searchState.dateStr,
+      searchState.siteSlots,
+      searchState.sport,
+      page,
+      pageSize,
+      searchState.lastUpdated
+    );
+    
+    // Обновляем сообщение
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      await safeEditMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: {
+          inline_keyboard: getPaginationKeyboard(page, searchState.totalPages || 1, searchState.sport)
+        }
+      });
+    }
+    
     return;
   }
 
