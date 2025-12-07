@@ -5,6 +5,24 @@ import { Storage } from '@google-cloud/storage';
 import * as fs from 'fs';
 import * as path from 'path';
 import { trackButtonClick, generateSessionId, parseButtonType } from './analytics';
+import {
+  TENNIS_COURT_NAMES,
+  TENNIS_COURT_LINKS,
+  TENNIS_COURT_MAPS,
+  TENNIS_COURT_METRO,
+  TENNIS_COURT_DISTRICTS,
+  TENNIS_COURT_IS_CITY,
+  TENNIS_COURT_LOCATIONS
+} from './tennis-constants';
+import {
+  PADEL_COURT_NAMES,
+  PADEL_COURT_LINKS,
+  PADEL_COURT_MAPS,
+  PADEL_COURT_METRO,
+  PADEL_COURT_DISTRICTS,
+  PADEL_COURT_IS_CITY,
+  PADEL_COURT_LOCATIONS
+} from './padel-constants';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -45,178 +63,6 @@ const PADEL_LOCAL_SLOTS_PATH = path.join(process.cwd(), PADEL_SLOTS_FILE);
 // Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage (требуется BUCKET_NAME)
 const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
 const storage = (USE_PROD_ACTUAL_SLOTS || BUCKET_NAME) ? new Storage() : null;
-
-// Названия площадок для отображения (теннис)
-const TENNIS_COURT_NAMES: Record<string, string> = {
-  "impuls": "Импульс",
-  "spartak-grunt": "Спартак» — крытый грунт",
-  "spartak-hard": "Спартак» — хард",
-  "itc-tsaritsyno": "ITC by WeGym «Царицыно»",
-  "itc-mytischy": "ITC by WeGym «Мытищи»",
-  "vidnyysport": "Видный Спорт",
-  "pro-tennis-kashirka": "PRO TENNIS на Каширке",
-  "megasport-tennis": "Мегаспорт",
-  "gallery-cort": "The Tennis Club Gallery",
-  "tennis-capital": "Tennis Capital",
-  "luzhniki-tennis": "Лужники",
-  "cooltennis-baumanskaya": "CoolTennis Бауманская",
-  "olonetskiy": "Олонецкий",
-  "slice-tennis": "Slice"
-};
-
-// Ссылки на бронирование кортов (теннис)
-const TENNIS_COURT_LINKS: Record<string, string> = {
-  "impuls": "https://tennis-impuls.ru/schedule/",
-  "spartak-grunt": "https://tenniscentre-spartak.ru/arenda/",
-  "spartak-hard": "https://tenniscentre-spartak.ru/arenda/",
-  "itc-tsaritsyno": "https://wegym.ru/tennis/tsaritsyno/",
-  "itc-mytischy": "https://tenniscentr.ru/schedule/?type=rent",
-  "vidnyysport": "https://vidnyysport.ru/tennisclub/raspisanie?type=rent",
-  "pro-tennis-kashirka": "https://myprotennis.ru/#rec848407151",
-  "megasport-tennis": "https://www.mstennis.ru/tennisnye-korty.aspx",
-  "gallery-cort": "https://www.gltennis.ru/tennis",
-  "tennis-capital": "https://tenniscapital.ru/rent",
-  "luzhniki-tennis": "https://tennis.luzhniki.ru/#courts",
-  "cooltennis-baumanskaya": "https://cooltennis.ru/timetable",
-  "olonetskiy": "https://findsport.ru/playground/5154",
-  "slice-tennis": "https://slicetennis-club.com/"
-};
-
-// Ссылки на карты кортов (теннис)
-const TENNIS_COURT_MAPS: Record<string, string> = {
-  "spartak-grunt": "https://yandex.ru/maps/org/tennisny_tsentr_spartak/109398270822/?ll=37.681559%2C55.801618&z=15.67",
-  "spartak-hard": "https://yandex.ru/maps/org/tennisny_tsentr_spartak/109398270822/?ll=37.681559%2C55.801618&z=15.67",
-  "itc-tsaritsyno": "https://yandex.ru/maps/org/wegym/113604721914/?ll=37.648751%2C55.608562&z=16.67",
-  "itc-mytischy": "https://yandex.ru/maps/org/tennisny_tsentr_mytishchi/1069246291/?ll=37.777518%2C55.929636&z=16.96",
-  "tennis-capital": "https://yandex.ru/maps/org/tennis_capital/224212200985/?ll=37.496897%2C55.827879&z=14",
-  "pro-tennis-kashirka": "https://yandex.ru/maps/org/protennis/120107923310/?indoorLevel=1&ll=37.642770%2C55.654482&z=16.96",
-  "cooltennis-baumanskaya": "https://yandex.ru/maps/org/cooltennis/191864026500?si=1c1bjdpvc13h2wtg1u9ybe8m1c",
-  "megasport-tennis": "https://yandex.ru/maps/org/megasport_tennis/1115449195/?ll=37.496299%2C55.651212&z=16.96",
-  "luzhniki-tennis": "https://yandex.ru/maps/org/dvorets_tennisa_luzhniki/2495166648/?indoorLevel=1&ll=37.564221%2C55.712837&z=16.96",
-  "slice-tennis": "https://yandex.ru/maps/org/slays/146210327632/?ll=37.753802%2C55.667452&z=16.96",
-  "gallery-cort": "https://yandex.ru/maps/org/galereya/1366934557/?ll=37.715830%2C55.680707&z=16.96",
-  "olonetskiy": "https://yandex.ru/maps/org/chempion/51651714906/?ll=37.662836%2C55.880622&z=16.67",
-  "impuls": "https://yandex.ru/maps/org/tsentr_tennisnykh_tekhnologiy_impuls/226524913148/?ll=37.753979%2C55.884070&z=16.67",
-  "vidnyysport": "https://yandex.ru/maps/org/i_love_tennis/15458668670/?ll=37.665431%2C55.551756&z=12.59"
-};
-
-// Маппинг метро/города для кортов (теннис)
-const TENNIS_COURT_METRO: Record<string, string> = {
-  "spartak-grunt": "Сокольники",
-  "spartak-hard": "Сокольники",
-  "itc-tsaritsyno": "Кантемировская",
-  "itc-mytischy": "Мытищи",
-  "tennis-capital": "Войковская",
-  "pro-tennis-kashirka": "Каширская",
-  "cooltennis-baumanskaya": "Бауманская",
-  "megasport-tennis": "Беляево",
-  "luzhniki-tennis": "Лужники",
-  "slice-tennis": "Братиславская",
-  "gallery-cort": "Печатники",
-  "olonetskiy": "Медведково",
-  "impuls": "Мытищи",
-  "vidnyysport": "Видное"
-};
-
-// Маппинг округов/районов для кортов (теннис)
-const TENNIS_COURT_DISTRICTS: Record<string, string> = {
-  "spartak-grunt": "ВАО",
-  "spartak-hard": "ВАО",
-  "itc-tsaritsyno": "ЮАО",
-  "itc-mytischy": "Мытищи",
-  "tennis-capital": "САО",
-  "pro-tennis-kashirka": "ЮАО",
-  "cooltennis-baumanskaya": "ЦАО",
-  "megasport-tennis": "ЮЗАО",
-  "luzhniki-tennis": "ЦАО",
-  "slice-tennis": "ЮВАО",
-  "gallery-cort": "ЮВАО",
-  "olonetskiy": "СВАО",
-  "impuls": "Мытищи",
-  "vidnyysport": "Видное"
-};
-
-// Список кортов, где в метро указан город (не станция метро)
-const TENNIS_COURT_IS_CITY: Record<string, boolean> = {
-  "itc-mytischy": true,
-  "impuls": true,
-  "vidnyysport": true
-};
-
-// Названия площадок для отображения (падел)
-const PADEL_COURT_NAMES: Record<string, string> = {
-  "rocket-padel-club": "Rocket Padel Club",
-  "padel-friends": "Padel Friends",
-  "buenos-padel": "Buenos Padel",
-  "padel-belozer": "Падел на Белозерской",
-  "tennis-capital-padel-savelovskaya": "Tennis Capital Савеловская",
-  "tennis-capital-padel-vdnh": "Tennis Capital ВДНХ",
-  "up2-padel": "Up2 Padel",
-  "bandehaarenaclub": "Bandeha Padel Arena",
-  "orbita-tennis": "Орбита Падел",
-  "v-padel": "V Padel"
-};
-
-// Ссылки на бронирование кортов (падел)
-const PADEL_COURT_LINKS: Record<string, string> = {
-  "rocket-padel-club": "https://rocketpadel-club.ru/",
-  "padel-friends": "https://padelfriends.ru/moscow",
-  "buenos-padel": "https://buenospadel.ru/",
-  "padel-belozer": "https://padel-tennis-msk.ru/",
-  "tennis-capital-padel-savelovskaya": "https://tenniscapital.ru/padel-tennis",
-  "tennis-capital-padel-vdnh": "https://tenniscapital.ru/padel-tennis",
-  "up2-padel": "https://juzhnyj-1745398028.clients.site/?yclid=16571022320512532479&utm_content=17369921911&utm_source=geoadv_maps",
-  "bandehaarenaclub": "https://bandehaarenaclub.ru/",
-  "orbita-tennis": "https://orbitatennis.ru/",
-  "v-padel": "https://v-padel.ru/"
-};
-
-// Ссылки на карты кортов (падел)
-const PADEL_COURT_MAPS: Record<string, string> = {
-  "rocket-padel-club": "https://yandex.ru/maps/org/rocket_padel_club/209082414430/?ll=37.060725%2C55.532844&z=16.96",
-  "padel-friends": "https://yandex.ru/maps/org/padel_friends/35837402005/?ll=37.552166%2C55.715677&z=16.96",
-  "buenos-padel": "https://yandex.ru/maps/org/buenos_padel/67008877127/?indoorLevel=1&ll=37.592561%2C55.803768&z=16.67",
-  "padel-belozer": "https://yandex.ru/maps/org/tennis_i_padel/124086428013/?ll=37.615136%2C55.895171&z=16.67",
-  "tennis-capital-padel-savelovskaya": "https://yandex.ru/maps/org/padel_tennis_kepital/96963201111/?ll=37.591995%2C55.800454&z=16.67",
-  "tennis-capital-padel-vdnh": "https://yandex.ru/maps/org/tennis_kepital/78859832801/?ll=37.613995%2C55.832212&z=16.67",
-  "up2-padel": "https://yandex.ru/maps/org/up2_padel/166138496300/?indoorLevel=1&ll=37.611742%2C55.621719&z=16.96",
-  "bandehaarenaclub": "https://yandex.ru/maps/org/bandeha_padel_arena/216192396141/?ll=37.389086%2C55.826837&z=16.96",
-  "orbita-tennis": "https://yandex.ru/maps/org/orbita_padel/113012593244/?ll=37.395581%2C55.649413&z=13.19",
-  "v-padel": "https://yandex.ru/maps/org/v_padel/54876592176/?indoorLevel=5&ll=37.407196%2C55.884969&z=16.96"
-};
-
-// Маппинг метро/города для кортов (падел)
-const PADEL_COURT_METRO: Record<string, string> = {
-  "tennis-capital-padel-savelovskaya": "Савеловская",
-  "tennis-capital-padel-vdnh": "ВДНХ",
-  "padel-friends": "Сокольники",
-  "buenos-padel": "Савеловская",
-  "padel-belozer": "Белозерская",
-  "up2-padel": "Южная",
-  "bandehaarenaclub": "Октябрьское поле",
-  "orbita-tennis": "Юго-Западная",
-  "v-padel": "Петровско-Разумовская",
-  "rocket-padel-club": "Мытищи"
-};
-
-// Маппинг округов/районов для кортов (падел)
-const PADEL_COURT_DISTRICTS: Record<string, string> = {
-  "tennis-capital-padel-savelovskaya": "САО",
-  "tennis-capital-padel-vdnh": "СВАО",
-  "padel-friends": "ВАО",
-  "buenos-padel": "САО",
-  "padel-belozer": "СВАО",
-  "up2-padel": "ЮАО",
-  "bandehaarenaclub": "СЗАО",
-  "orbita-tennis": "ЗАО",
-  "v-padel": "САО",
-  "rocket-padel-club": "Мытищи"
-};
-
-// Список кортов, где в метро указан город (не станция метро)
-const PADEL_COURT_IS_CITY: Record<string, boolean> = {
-  "rocket-padel-club": true
-};
 
 // Режим работы: dev (polling) или prod (webhook)
 const isDev = process.env.NODE_ENV === 'development';
@@ -346,38 +192,6 @@ const timeOptions = [
   { id: 'evening', label: 'Вечер (18:00-00:00)', startHour: 18, endHour: 24 },
   { id: 'any', label: 'Не важно' }
 ];
-
-// Маппинг кортов к локациям (теннис)
-const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
-  "impuls": ["moscow-region"],
-  "spartak-grunt": ["east"],
-  "spartak-hard": ["east"],
-  "itc-tsaritsyno": ["south"],
-  "itc-mytischy": ["moscow-region"],
-  "vidnyysport": ["moscow-region"],
-  "pro-tennis-kashirka": ["south"],
-  "megasport-tennis": ["south"],
-  "gallery-cort": ["south"],
-  "tennis-capital": ["north"],
-  "luzhniki-tennis": ["center"],
-  "cooltennis-baumanskaya": ["east"],
-  "olonetskiy": ["north"],
-  "slice-tennis": ["east"]
-};
-
-// Маппинг кортов к локациям (падел)
-const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
-  "rocket-padel-club": ["moscow-region"],
-  "padel-friends": ["center"],
-  "buenos-padel": ["center"],
-  "padel-belozer": ["south"],
-  "tennis-capital-padel-savelovskaya": ["north"],
-  "tennis-capital-padel-vdnh": ["north"],
-  "up2-padel": ["south"],
-  "bandehaarenaclub": ["west"],
-  "orbita-tennis": ["west"],
-  "v-padel": ["north"]
-};
 
 // Временное хранилище для состояния поиска (дата, спорт, выбранные локации, выбранное время)
 interface SearchState {
