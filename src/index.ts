@@ -90,7 +90,7 @@ const TENNIS_COURT_MAPS: Record<string, string> = {
   "itc-mytischy": "https://yandex.ru/maps/org/tennisny_tsentr_mytishchi/1069246291/?ll=37.777518%2C55.929636&z=16.96",
   "tennis-capital": "https://yandex.ru/maps/org/tennis_capital/224212200985/?ll=37.496897%2C55.827879&z=14",
   "pro-tennis-kashirka": "https://yandex.ru/maps/org/protennis/120107923310/?indoorLevel=1&ll=37.642770%2C55.654482&z=16.96",
-  "cooltennis-baumanskaya": "https://yandex.ru/maps/org/cooltennis/179733447361/?ll=37.554967%2C55.703911&z=16.67",
+  "cooltennis-baumanskaya": "https://yandex.ru/maps/org/cooltennis/191864026500?si=1c1bjdpvc13h2wtg1u9ybe8m1c",
   "megasport-tennis": "https://yandex.ru/maps/org/megasport_tennis/1115449195/?ll=37.496299%2C55.651212&z=16.96",
   "luzhniki-tennis": "https://yandex.ru/maps/org/dvorets_tennisa_luzhniki/2495166648/?indoorLevel=1&ll=37.564221%2C55.712837&z=16.96",
   "slice-tennis": "https://yandex.ru/maps/org/slays/146210327632/?ll=37.753802%2C55.667452&z=16.96",
@@ -509,7 +509,7 @@ function formatDateButton(dateKey: string): string {
 }
 
 /**
- * Создаёт горизонтальную клавиатуру с датами
+ * Создаёт клавиатуру с датами, распределяя кнопки по нескольким рядам
  */
 function getDatePickerKeyboard(dates: string[]): TelegramBot.InlineKeyboardButton[][] {
   const buttons = dates.map(date => ({
@@ -517,8 +517,15 @@ function getDatePickerKeyboard(dates: string[]): TelegramBot.InlineKeyboardButto
     callback_data: `date_pick_${date}`
   }));
   
-  // Возвращаем все кнопки в одном ряду (Telegram позволяет скроллить горизонтально)
-  return [buttons];
+  // Распределяем кнопки по рядам (по 3 кнопки в ряд для лучшей читаемости)
+  const rows: TelegramBot.InlineKeyboardButton[][] = [];
+  const buttonsPerRow = 3;
+  
+  for (let i = 0; i < buttons.length; i += buttonsPerRow) {
+    rows.push(buttons.slice(i, i + buttonsPerRow));
+  }
+  
+  return rows;
 }
 
 /**
@@ -1590,6 +1597,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         callback_data: `date_pick_${date}_${sport}`
       }));
       
+      // Распределяем кнопки по рядам (по 3 кнопки в ряд для лучшей читаемости)
+      const rows: TelegramBot.InlineKeyboardButton[][] = [];
+      const buttonsPerRow = 3;
+      
+      for (let i = 0; i < dateButtons.length; i += buttonsPerRow) {
+        rows.push(dateButtons.slice(i, i + buttonsPerRow));
+      }
+      
       // Редактируем сообщение с выбором даты
       const messageId = query.message?.message_id;
       if (messageId) {
@@ -1597,14 +1612,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: {
-            inline_keyboard: [dateButtons]
+            inline_keyboard: rows
           }
         });
       } else {
         // Fallback на sendMessage, если message_id недоступен
         await getBot().sendMessage(chatId, '📅 Выбери дату:', {
           reply_markup: {
-            inline_keyboard: [dateButtons]
+            inline_keyboard: rows
           }
         });
       }
