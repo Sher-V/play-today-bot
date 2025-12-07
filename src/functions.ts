@@ -2,5 +2,5 @@
 // Экспортирует все функции проекта
 
 export { telegramWebhook, playTodayBot } from './index';
-export { slotsFetcher, fetchSlots } from './slots-fetcher';
+export { slotsFetcher, fetchSlots } from './functions/slots-fetcher/slots-fetcher';
 
