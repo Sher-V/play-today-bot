@@ -503,9 +503,14 @@ function getDatePickerKeyboard(dates: string[]): TelegramBot.InlineKeyboardButto
 function formatLastUpdatedTime(lastUpdated: string): string {
   try {
     const date = new Date(lastUpdated);
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes}`;
+    // Конвертируем в московское время (GMT+3)
+    const formatter = new Intl.DateTimeFormat('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    return formatter.format(date);
   } catch (error) {
     console.error('Ошибка форматирования времени:', error);
     return '';
@@ -619,7 +624,7 @@ function formatSlotsMessage(date: string, siteSlots: { siteName: string; slots: 
   if (lastUpdated) {
     const formattedTime = formatLastUpdatedTime(lastUpdated);
     if (formattedTime) {
-      message += `\nℹ️ _Данные актуальны на ${formattedTime} и обновляются каждые 20 минут._`;
+      message += `\nℹ️ _Данные актуальны на ${formattedTime} (МСК) и обновляются каждые 20 минут._`;
     }
   }
   

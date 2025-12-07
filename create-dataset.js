@@ -7,7 +7,7 @@ const { BigQuery } = require('@google-cloud/bigquery');
 
 const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'play-today-479819';
 const DATASET_ID = 'telegram_bot_analytics';
-const LOCATION = 'EU';
+const LOCATION = 'europe-west1'; // Belgium
 
 async function createDataset() {
   const bigquery = new BigQuery({ projectId: PROJECT_ID });

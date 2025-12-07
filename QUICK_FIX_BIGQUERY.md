@@ -14,14 +14,14 @@
    https://console.cloud.google.com/bigquery?project=play-today-479819
    ```
 
-2. **Важно!** Выбери локацию **EU** в выпадающем списке (справа вверху, рядом с названием проекта)
+2. **Важно!** Выбери локацию **europe-west1 (Belgium)** в выпадающем списке (справа вверху, рядом с названием проекта)
 
 3. **Создай dataset:**
    - В левой панели нажми на `play-today-479819`
    - Нажми "⋮" (три точки) → **Create dataset**
    - Заполни:
      - **Dataset ID**: `telegram_bot_analytics`
-     - **Data location**: `eu (multiple regions in European Union)` или `europe-west1 (Belgium)`
+     - **Data location**: `europe-west1 (Belgium)` ⚠️ Важно: выбери именно Belgium, не просто EU!
    - Нажми **Create dataset**
 
 ### Шаг 2: Проверь логи Cloud Functions

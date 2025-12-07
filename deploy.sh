@@ -46,7 +46,7 @@ echo "   Регион: $REGION"
 echo "   Функция: $FUNCTION_NAME"
 
 # Подготовка переменных окружения
-ENV_VARS="BOT_TOKEN=$BOT_TOKEN,GCS_BUCKET=$BUCKET_NAME"
+ENV_VARS="BOT_TOKEN=$BOT_TOKEN,GCS_BUCKET=$BUCKET_NAME,GOOGLE_CLOUD_PROJECT=$PROJECT_ID"
 
 # Опционально: добавляем BigQuery переменные, если они заданы
 if [ ! -z "$USE_BIGQUERY" ]; then

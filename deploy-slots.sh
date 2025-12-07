@@ -73,29 +73,43 @@ echo ""
 echo "Или выполни следующую команду:"
 echo ""
 
-# Автоматически создаём Cloud Scheduler job
-read -p "Создать Cloud Scheduler job сейчас? (y/N) " -n 1 -r
+# Автоматически создаём или обновляем Cloud Scheduler job
+read -p "Создать/обновить Cloud Scheduler job сейчас? (y/N) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "📅 Создаём Cloud Scheduler job..."
+    echo "📅 Проверяем Cloud Scheduler job..."
     
     # Включаем Cloud Scheduler API если не включен
     gcloud services enable cloudscheduler.googleapis.com --quiet || true
     
-    # Удаляем старый job если есть
-    gcloud scheduler jobs delete slots-fetcher-job --location=$REGION --quiet 2>/dev/null || true
+    JOB_NAME="slots-fetcher-job"
     
-    # Создаём новый job
-    gcloud scheduler jobs create http slots-fetcher-job \
-        --location=$REGION \
-        --schedule='*/20 8-21 * * *' \
-        --time-zone='Europe/Moscow' \
-        --uri="$FUNCTION_URL" \
-        --http-method=POST \
-        --attempt-deadline=120s
-    
-    echo "✅ Cloud Scheduler job создан!"
-    echo "   Расписание: каждые 20 минут с 8:00 до 21:00 МСК"
+    # Проверяем, существует ли job
+    if gcloud scheduler jobs describe $JOB_NAME --location=$REGION &>/dev/null; then
+        echo "   Job уже существует, обновляем..."
+        gcloud scheduler jobs update http $JOB_NAME \
+            --location=$REGION \
+            --schedule='*/20 8-21 * * *' \
+            --time-zone='Europe/Moscow' \
+            --uri="$FUNCTION_URL" \
+            --http-method=POST \
+            --attempt-deadline=120s
+        
+        echo "✅ Cloud Scheduler job обновлён!"
+        echo "   Расписание: каждые 20 минут с 8:00 до 21:00 МСК"
+    else
+        echo "   Job не существует, создаём новый..."
+        gcloud scheduler jobs create http $JOB_NAME \
+            --location=$REGION \
+            --schedule='*/20 8-21 * * *' \
+            --time-zone='Europe/Moscow' \
+            --uri="$FUNCTION_URL" \
+            --http-method=POST \
+            --attempt-deadline=120s
+        
+        echo "✅ Cloud Scheduler job создан!"
+        echo "   Расписание: каждые 20 минут с 8:00 до 21:00 МСК"
+    fi
 fi
 
 echo ""

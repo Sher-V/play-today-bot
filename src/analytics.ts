@@ -9,10 +9,16 @@
 import { BigQuery } from '@google-cloud/bigquery';
 
 // Конфигурация BigQuery (опционально)
-const BIGQUERY_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT;
+// GOOGLE_CLOUD_PROJECT может быть не установлен в Cloud Functions, используем metadata или явно задаем
+const BIGQUERY_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT || 'play-today-479819';
 const BIGQUERY_DATASET_ID = process.env.BIGQUERY_DATASET || 'telegram_bot_analytics';
 const BIGQUERY_TABLE_ID = process.env.BIGQUERY_TABLE || 'button_clicks';
 const USE_BIGQUERY = process.env.USE_BIGQUERY === 'true' && !!BIGQUERY_PROJECT_ID;
+
+// Логируем для отладки
+if (process.env.USE_BIGQUERY === 'true') {
+  console.log(`🔧 BigQuery config: USE_BIGQUERY=${process.env.USE_BIGQUERY}, PROJECT_ID=${BIGQUERY_PROJECT_ID}, DATASET=${BIGQUERY_DATASET_ID}`);
+}
 
 // Инициализация BigQuery клиента (только если включен)
 let bigquery: BigQuery | null = null;
@@ -64,29 +70,38 @@ function logToCloudLogging(event: ButtonClickEvent): void {
  * Сохраняет событие в BigQuery (асинхронно, не блокирует выполнение)
  */
 async function saveToBigQuery(event: ButtonClickEvent): Promise<void> {
+  console.log(`🔍 saveToBigQuery called: bigquery=${!!bigquery}, USE_BIGQUERY=${USE_BIGQUERY}`);
   if (!bigquery || !USE_BIGQUERY) {
+    console.log(`❌ Cannot save to BigQuery: bigquery=${!!bigquery}, USE_BIGQUERY=${USE_BIGQUERY}`);
     return;
   }
 
+  const datasetId = BIGQUERY_DATASET_ID;
+  const tableId = BIGQUERY_TABLE_ID;
+
   try {
-    const datasetId = BIGQUERY_DATASET_ID;
-    const tableId = BIGQUERY_TABLE_ID;
 
     // Проверяем существование dataset и создаем если нужно
     const [datasets] = await bigquery.getDatasets();
     const datasetExists = datasets.some(ds => (ds.id || '') === datasetId);
 
     if (!datasetExists) {
+      console.log(`📦 Creating dataset ${datasetId} in europe-west1...`);
       await bigquery.createDataset(datasetId, {
-        location: 'EU', // или 'US', 'asia-northeast1' и т.д.
+        location: 'europe-west1', // Belgium
         description: 'Telegram bot analytics dataset',
       });
+      console.log(`✅ Dataset ${datasetId} created`);
     }
 
     // Проверяем существование таблицы и создаем если нужно
     const dataset = bigquery.dataset(datasetId);
     const [tables] = await dataset.getTables();
     const tableExists = tables.some(t => (t.id || '') === tableId);
+    
+    if (!tableExists) {
+      console.log(`📋 Creating table ${tableId} in dataset ${datasetId}...`);
+    }
 
     if (!tableExists) {
       await dataset.createTable(tableId, {
@@ -104,6 +119,7 @@ async function saveToBigQuery(event: ButtonClickEvent): Promise<void> {
         ],
         description: 'Telegram bot button click events',
       });
+      console.log(`✅ Table ${tableId} created`);
     }
 
     // Вставляем событие
@@ -123,9 +139,17 @@ async function saveToBigQuery(event: ButtonClickEvent): Promise<void> {
     ];
 
     await dataset.table(tableId).insert(rows);
-  } catch (error) {
-    // Логируем ошибку, но не прерываем выполнение
-    console.error('Error saving to BigQuery:', error);
+    console.log(`✅ Event saved to BigQuery: ${event.buttonType}/${event.buttonId}`);
+  } catch (error: any) {
+    // Логируем детальную ошибку
+    console.error('❌ Error saving to BigQuery:', {
+      message: error?.message,
+      code: error?.code,
+      errors: error?.errors,
+      datasetId,
+      tableId,
+      eventButtonId: event.buttonId,
+    });
   }
 }
 
@@ -149,10 +173,13 @@ export async function trackButtonClick(
 
   // Сохраняем в BigQuery (если включено и запрошено)
   if (saveToBQ && USE_BIGQUERY) {
+    console.log(`💾 Attempting to save to BigQuery: ${event.buttonType}/${event.buttonId}, USE_BIGQUERY=${USE_BIGQUERY}, bigquery=${!!bigquery}`);
     // Выполняем асинхронно, не ждем завершения
     saveToBigQuery(fullEvent).catch(err => {
       console.error('Failed to save event to BigQuery:', err);
     });
+  } else {
+    console.log(`⏭️  Skipping BigQuery save: saveToBQ=${saveToBQ}, USE_BIGQUERY=${USE_BIGQUERY}, bigquery=${!!bigquery}`);
   }
 }
 
