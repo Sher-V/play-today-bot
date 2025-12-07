@@ -305,7 +305,7 @@ const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
   "up2-padel": ["south"],
   "bandehaarenaclub": ["west"],
   "orbita-tennis": ["west"],
-  "v-padel": ["center"]
+  "v-padel": ["north"]
 };
 
 // Временное хранилище для состояния поиска (дата, спорт, выбранные локации, выбранное время)
@@ -969,7 +969,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   if (!chatId) return;
 
-  // Отслеживаем клик на кнопку
+  // Отвечаем на callback query сразу, до любых долгих операций
+  // Это важно, чтобы избежать ошибки "query is too old"
+  await getBot().answerCallbackQuery(query.id).catch(err => {
+    // Логируем ошибку, но продолжаем выполнение
+    console.error('Error answering callback query:', err);
+  });
+
+  // Отслеживаем клик на кнопку (не блокируем выполнение)
   if (data) {
     const buttonInfo = parseButtonType(data);
     const buttonLabel = query.message?.reply_markup?.inline_keyboard
@@ -996,8 +1003,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       console.error('Error tracking button click:', err);
     });
   }
-
-  await getBot().answerCallbackQuery(query.id);
 
   // Обработка выбора уровня игры
   if (data?.startsWith('level_')) {
@@ -1608,13 +1613,23 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       // Редактируем сообщение с выбором даты
       const messageId = query.message?.message_id;
       if (messageId) {
-        await getBot().editMessageText('📅 Выбери дату:', {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: {
-            inline_keyboard: rows
-          }
-        });
+        try {
+          await getBot().editMessageText('📅 Выбери дату:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: rows
+            }
+          });
+        } catch (error) {
+          // Если не удалось отредактировать сообщение, отправляем новое
+          console.error('Error editing message, sending new one:', error);
+          await getBot().sendMessage(chatId, '📅 Выбери дату:', {
+            reply_markup: {
+              inline_keyboard: rows
+            }
+          });
+        }
       } else {
         // Fallback на sendMessage, если message_id недоступен
         await getBot().sendMessage(chatId, '📅 Выбери дату:', {
