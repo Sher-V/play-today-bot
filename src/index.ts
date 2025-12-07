@@ -714,11 +714,12 @@ async function handleStart(msg: TelegramBot.Message) {
 
 Выбери время, а я покажу, где можно сыграть. 🎾✨`, {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: '🎾 Найти корт (теннис)', callback_data: 'find_tennis_court' }],
-        [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
-        [{ text: '💬 Обратная связь', url: 'https://t.me/play_today_chat' }]
-      ]
+      keyboard: [
+        [{ text: '🎾 Найти корт (теннис)' }],
+        [{ text: '🏓 Найти корт (падел)' }],
+        [{ text: '💬 Обратная связь' }],
+      ],
+      resize_keyboard: true
     }
   });
 }
@@ -879,6 +880,29 @@ async function handleMessage(msg: TelegramBot.Message) {
           ]
         }
       });
+      break;
+    case '💬 Обратная связь':
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'feedback',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      await getBot().sendMessage(chatId, '💬 Оставьте обратную связь: https://t.me/play_today_chat');
       break;
     // case '👤 Профиль':
     //   await getBot().sendMessage(chatId, '👤 Как к тебе обращаться?', {
@@ -1333,36 +1357,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Кнопка "Найти корт (теннис)" из главного меню
-  if (data === 'find_tennis_court') {
-    await getBot().answerCallbackQuery(query.id);
-    await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
-          [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
-          [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
-        ]
-      }
-    });
-    return;
-  }
-
-  // Кнопка "Найти корт (падел)" из главного меню
-  if (data === 'find_padel_court') {
-    await getBot().answerCallbackQuery(query.id);
-    await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📆 Сегодня', callback_data: 'date_today_padel' }],
-          [{ text: '📆 Завтра', callback_data: 'date_tomorrow_padel' }],
-          [{ text: '🗓 Указать дату', callback_data: 'date_custom_padel' }]
-        ]
-      }
-    });
-    return;
-  }
-
   // Обработка выбора конкретной даты из date picker
   if (data?.startsWith('date_pick_')) {
     const parts = data.replace('date_pick_', '').split('_');
@@ -1493,11 +1487,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
 Выбери время, а я покажу, где можно сыграть. 🎾✨`, {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: '🎾 Найти корт (теннис)', callback_data: 'find_tennis_court' }],
-          [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
-          [{ text: '💬 Обратная связь', url: 'https://t.me/play_today_chat' }]
-        ]
+        keyboard: [
+          [{ text: '🎾 Найти корт (теннис)' }],
+          [{ text: '🏓 Найти корт (падел)' }],
+          [{ text: '💬 Обратная связь' }]
+          // [{ text: '👤 Профиль' }]
+        ],
+        resize_keyboard: true
       }
     });
     return;
