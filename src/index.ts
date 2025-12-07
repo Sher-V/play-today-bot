@@ -1013,59 +1013,60 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         return;
       }
       
-      // Получаем доступные временные диапазоны
-      const availableTimeOptions = getAvailableTimeOptions(searchState.date);
+      // Загружаем слоты
+      const slotsData = await loadSlots(searchState.sport);
+      if (!slotsData) {
+        await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
+        searchStates.delete(userId);
+        return;
+      }
       
-      // Фильтруем опции, исключая "Не важно" для проверки
-      const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
+      // Получаем слоты на выбранную дату
+      const siteSlots = getSlotsByDate(slotsData, searchState.date);
       
-      // Если остался только один диапазон (кроме "Не важно"), автоматически выбираем его
-      if (timeOptionsWithoutAny.length === 1) {
-        searchState.selectedTimeSlots = [timeOptionsWithoutAny[0].id];
-        searchStates.set(userId, searchState);
+      // Фильтруем по локациям
+      const filteredByLocation = filterSlotsByLocation(siteSlots, searchState.selectedLocations, searchState.sport);
+      
+      // Фильтруем по времени
+      const filteredSlots = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
+      
+      // Форматируем и отправляем сообщение
+      const emoji = searchState.sport === 'padel' ? '🏓' : '🎾';
+      await getBot().editMessageText(
+        `${emoji} Ищем корты на ${searchState.dateStr}...`,
+        { chat_id: chatId, message_id: query.message?.message_id }
+      );
+      
+      // Проверяем, найдены ли корты
+      if (filteredSlots.length === 0) {
+        // Проверяем, были ли выбраны конкретные фильтры (не "any")
+        const hasSpecificLocation = !searchState.selectedLocations.includes('any');
+        const hasSpecificTime = !searchState.selectedTimeSlots.includes('any');
         
-        // Пропускаем шаг выбора времени и сразу показываем результаты
-        const slotsData = await loadSlots(searchState.sport);
-        if (!slotsData) {
-          await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
-          searchStates.delete(userId);
-          return;
-        }
-        
-        // Получаем слоты на выбранную дату
-        const siteSlots = getSlotsByDate(slotsData, searchState.date);
-        
-        // Фильтруем по локациям
-        const filteredByLocation = filterSlotsByLocation(siteSlots, searchState.selectedLocations, searchState.sport);
-        
-        // Фильтруем по времени
-        const filteredSlots = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
-        
-        // Форматируем и отправляем сообщение
-        const emoji = searchState.sport === 'padel' ? '🏓' : '🎾';
-        await getBot().editMessageText(
-          `${emoji} Ищем корты на ${searchState.dateStr}...`,
-          { chat_id: chatId, message_id: query.message?.message_id }
-        );
-        
-        // Проверяем, найдены ли корты
-        if (filteredSlots.length === 0) {
-          // Проверяем, были ли выбраны конкретные фильтры (не "any")
-          const hasSpecificLocation = !searchState.selectedLocations.includes('any');
-          const hasSpecificTime = !searchState.selectedTimeSlots.includes('any');
+        if (hasSpecificLocation || hasSpecificTime) {
+          // Пробуем показать все варианты без фильтров
+          const allSlots = getSlotsByDate(slotsData, searchState.date);
+          const allSlotsWithoutLocationFilter = filterSlotsByLocation(allSlots, ['any'], searchState.sport);
+          const allSlotsWithoutFilters = filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']);
           
-          if (hasSpecificLocation || hasSpecificTime) {
-            // Пробуем показать все варианты без фильтров
-            const allSlots = getSlotsByDate(slotsData, searchState.date);
-            const allSlotsWithoutLocationFilter = filterSlotsByLocation(allSlots, ['any'], searchState.sport);
-            const allSlotsWithoutFilters = filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']);
-            
-            if (allSlotsWithoutFilters.length > 0) {
-              // Показываем альтернативные варианты
-              const message = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated);
+          if (allSlotsWithoutFilters.length > 0) {
+            // Показываем альтернативные варианты
+            const message = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated);
+            const alternativeMessage = `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо ниже написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨\n\n${message}`;
+            const messageId = query.message?.message_id;
+            if (messageId) {
+              await getBot().editMessageText(alternativeMessage, { 
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true,
+                reply_markup: {
+                  inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
+                }
+              });
+            } else {
+              // Fallback на sendMessage, если message_id недоступен
               await getBot().sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
-              
-              // Отправляем отдельным сообщением информацию об альтернативах
               await getBot().sendMessage(
                 chatId,
                 `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо выше написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨`,
@@ -1076,24 +1077,50 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
                   }
                 }
               );
-            } else {
-              // Даже без фильтров ничего нет
-              await getBot().sendMessage(
-                chatId,
-                `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`,
-                { parse_mode: 'Markdown' }
-              );
             }
           } else {
-            // Фильтры были "any", но ничего не найдено
-            await getBot().sendMessage(
-              chatId,
-              `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`,
-              { parse_mode: 'Markdown' }
-            );
+            // Даже без фильтров ничего нет
+            const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
+            const messageId = query.message?.message_id;
+            if (messageId) {
+              await getBot().editMessageText(errorMessage, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown'
+              });
+            } else {
+              await getBot().sendMessage(chatId, errorMessage, { parse_mode: 'Markdown' });
+            }
           }
         } else {
-          const message = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
+          // Фильтры были "any", но ничего не найдено
+          const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
+          const messageId = query.message?.message_id;
+          if (messageId) {
+            await getBot().editMessageText(errorMessage, {
+              chat_id: chatId,
+              message_id: messageId,
+              parse_mode: 'Markdown'
+            });
+          } else {
+            await getBot().sendMessage(chatId, errorMessage, { parse_mode: 'Markdown' });
+          }
+        }
+      } else {
+        const message = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText(message, { 
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown', 
+            disable_web_page_preview: true,
+            reply_markup: {
+              inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
+            }
+          });
+        } else {
+          // Fallback на sendMessage, если message_id недоступен
           await getBot().sendMessage(chatId, message, { 
             parse_mode: 'Markdown', 
             disable_web_page_preview: true,
@@ -1102,27 +1129,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             }
           });
         }
-        
-        // Очищаем состояние поиска
-        searchStates.delete(userId);
-        return;
       }
       
-      // Если диапазонов несколько, показываем выбор времени с доступными опциями
-      searchState.selectedTimeSlots = [];
-      searchStates.set(userId, searchState);
-      
-      // Показываем выбор времени
-      await getBot().editMessageText(
-        '⏰ В какое время ищем корт?',
-        { 
-          chat_id: chatId, 
-          message_id: query.message?.message_id,
-          reply_markup: {
-            inline_keyboard: getTimeKeyboard([], availableTimeOptions)
-          }
-        }
-      );
+      // Очищаем состояние поиска
+      searchStates.delete(userId);
       return;
     }
     
@@ -1174,87 +1184,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         return;
       }
       
-      // Загружаем слоты
-      const slotsData = await loadSlots(searchState.sport);
-      if (!slotsData) {
-        await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
-        searchStates.delete(userId);
-        return;
-      }
-      
-      // Получаем слоты на выбранную дату
-      const siteSlots = getSlotsByDate(slotsData, searchState.date);
-      
-      // Фильтруем по локациям
-      const filteredByLocation = filterSlotsByLocation(siteSlots, searchState.selectedLocations, searchState.sport);
-      
-      // Фильтруем по времени
-      const filteredSlots = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
-      
-      // Форматируем и отправляем сообщение
-      const emoji = searchState.sport === 'padel' ? '🏓' : '🎾';
-      await getBot().editMessageText(
-        `${emoji} Ищем корты на ${searchState.dateStr}...`,
-        { chat_id: chatId, message_id: query.message?.message_id }
-      );
-      
-      // Проверяем, найдены ли корты
-      if (filteredSlots.length === 0) {
-        // Проверяем, были ли выбраны конкретные фильтры (не "any")
-        const hasSpecificLocation = !searchState.selectedLocations.includes('any');
-        const hasSpecificTime = !searchState.selectedTimeSlots.includes('any');
-        
-        if (hasSpecificLocation || hasSpecificTime) {
-          // Пробуем показать все варианты без фильтров
-          const allSlots = getSlotsByDate(slotsData, searchState.date);
-          const allSlotsWithoutLocationFilter = filterSlotsByLocation(allSlots, ['any'], searchState.sport);
-          const allSlotsWithoutFilters = filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']);
-          
-          if (allSlotsWithoutFilters.length > 0) {
-            // Показываем альтернативные варианты
-            const message = formatSlotsMessage(searchState.dateStr, allSlotsWithoutFilters, searchState.sport, slotsData.lastUpdated);
-            await getBot().sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
-            
-            // Отправляем отдельным сообщением информацию об альтернативах
-            await getBot().sendMessage(
-              chatId,
-              `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\Но выше написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨`,
-              { 
-                parse_mode: 'Markdown',
-                reply_markup: {
-                  inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-                }
-              }
-            );
-          } else {
-            // Даже без фильтров ничего нет
-            await getBot().sendMessage(
-              chatId,
-              `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`,
-              { parse_mode: 'Markdown' }
-            );
-          }
-        } else {
-          // Фильтры были "any", но ничего не найдено
-          await getBot().sendMessage(
-            chatId,
-            `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`,
-            { parse_mode: 'Markdown' }
-          );
+      // Показываем выбор локации
+      await getBot().editMessageText('📍 В какой локации ищем корт?', {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: getLocationKeyboard([])
         }
-      } else {
-        const message = formatSlotsMessage(searchState.dateStr, filteredSlots, searchState.sport, slotsData.lastUpdated);
-        await getBot().sendMessage(chatId, message, { 
-          parse_mode: 'Markdown', 
-          disable_web_page_preview: true,
-          reply_markup: {
-            inline_keyboard: getSelectAnotherDateKeyboard(searchState.sport)
-          }
-        });
-      }
-      
-      // Очищаем состояние поиска
-      searchStates.delete(userId);
+      });
       return;
     }
     
@@ -1361,15 +1298,31 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Кнопка "Найти корт" из inline меню (по умолчанию теннис)
   if (data === 'action_find_court') {
-    await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
-          [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
-          [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
-        ]
-      }
-    });
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      await getBot().editMessageText('📅 На какую дату ищем корт?', {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
+            [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
+            [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
+          ]
+        }
+      });
+    } else {
+      // Fallback на sendMessage, если message_id недоступен
+      await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
+            [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
+            [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
+          ]
+        }
+      });
+    }
     return;
   }
 
@@ -1390,12 +1343,40 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       selectedTimeSlots: []
     });
     
-    // Показываем выбор локации
-    await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
-      reply_markup: {
-        inline_keyboard: getLocationKeyboard([])
+    // Получаем доступные временные диапазоны
+    const availableTimeOptions = getAvailableTimeOptions(dateKey);
+    
+    // Фильтруем опции, исключая "Не важно" для проверки
+    const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
+    
+    // Проверяем, остался ли только вечерний диапазон и время >= 18:00 МСК
+    const moscowNow = getMoscowTime();
+    const currentHour = moscowNow.getHours();
+    const isOnlyEvening = timeOptionsWithoutAny.length === 1 && 
+                          timeOptionsWithoutAny[0].id === 'evening' && 
+                          currentHour >= 18;
+    
+    if (isOnlyEvening) {
+      // Автоматически выбираем вечер и показываем выбор локации
+      const searchState = searchStates.get(userId);
+      if (searchState) {
+        searchState.selectedTimeSlots = ['evening'];
+        searchStates.set(userId, searchState);
       }
-    });
+      
+      await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
+        reply_markup: {
+          inline_keyboard: getLocationKeyboard([])
+        }
+      });
+    } else {
+      // Показываем выбор времени
+      await getBot().sendMessage(chatId, '⏰ В какое время ищем корт?', {
+        reply_markup: {
+          inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+        }
+      });
+    }
     return;
   }
 
@@ -1411,20 +1392,71 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const dateKey = today.toISOString().split('T')[0]; // YYYY-MM-DD
       
       // Сохраняем состояние поиска
-      searchStates.set(userId, {
+      const searchState: SearchState = {
         date: dateKey,
         dateStr: dateStr,
         sport: sport,
         selectedLocations: [],
         selectedTimeSlots: []
-      });
+      };
       
-      // Показываем выбор локации
-      await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
-        reply_markup: {
-          inline_keyboard: getLocationKeyboard([])
+      // Получаем доступные временные диапазоны
+      const availableTimeOptions = getAvailableTimeOptions(dateKey);
+      
+      // Фильтруем опции, исключая "Не важно" для проверки
+      const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
+      
+      // Проверяем, остался ли только вечерний диапазон и время >= 18:00 МСК
+      const moscowNow = getMoscowTime();
+      const currentHour = moscowNow.getHours();
+      const isOnlyEvening = timeOptionsWithoutAny.length === 1 && 
+                            timeOptionsWithoutAny[0].id === 'evening' && 
+                            currentHour >= 18;
+      
+      if (isOnlyEvening) {
+        // Автоматически выбираем вечер и показываем выбор локации
+        searchState.selectedTimeSlots = ['evening'];
+        searchStates.set(userId, searchState);
+        
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText('📍 В какой локации ищем корт?', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: getLocationKeyboard([])
+            }
+          });
+        } else {
+          await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
+            reply_markup: {
+              inline_keyboard: getLocationKeyboard([])
+            }
+          });
         }
-      });
+      } else {
+        // Сохраняем состояние поиска перед показом выбора времени
+        searchStates.set(userId, searchState);
+        
+        // Редактируем сообщение с выбором времени
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText('⏰ В какое время ищем корт?', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+            }
+          });
+        } else {
+          // Fallback на sendMessage, если message_id недоступен
+          await getBot().sendMessage(chatId, '⏰ В какое время ищем корт?', {
+            reply_markup: {
+              inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+            }
+          });
+        }
+      }
       
     } else if (dateType === 'tomorrow') {
       const tomorrow = new Date();
@@ -1433,31 +1465,98 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const dateKey = tomorrow.toISOString().split('T')[0]; // YYYY-MM-DD
       
       // Сохраняем состояние поиска
-      searchStates.set(userId, {
+      const searchState: SearchState = {
         date: dateKey,
         dateStr: dateStr,
         sport: sport,
         selectedLocations: [],
         selectedTimeSlots: []
-      });
+      };
       
-      // Показываем выбор локации
-      await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
-        reply_markup: {
-          inline_keyboard: getLocationKeyboard([])
+      // Получаем доступные временные диапазоны
+      const availableTimeOptions = getAvailableTimeOptions(dateKey);
+      
+      // Фильтруем опции, исключая "Не важно" для проверки
+      const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
+      
+      // Проверяем, остался ли только вечерний диапазон и время >= 18:00 МСК
+      const moscowNow = getMoscowTime();
+      const currentHour = moscowNow.getHours();
+      const isOnlyEvening = timeOptionsWithoutAny.length === 1 && 
+                            timeOptionsWithoutAny[0].id === 'evening' && 
+                            currentHour >= 18;
+      
+      if (isOnlyEvening) {
+        // Автоматически выбираем вечер и показываем выбор локации
+        searchState.selectedTimeSlots = ['evening'];
+        searchStates.set(userId, searchState);
+        
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText('📍 В какой локации ищем корт?', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: getLocationKeyboard([])
+            }
+          });
+        } else {
+          await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
+            reply_markup: {
+              inline_keyboard: getLocationKeyboard([])
+            }
+          });
         }
-      });
+      } else {
+        // Сохраняем состояние поиска перед показом выбора времени
+        searchStates.set(userId, searchState);
+        
+        // Редактируем сообщение с выбором времени
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText('⏰ В какое время ищем корт?', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+            }
+          });
+        } else {
+          // Fallback на sendMessage, если message_id недоступен
+          await getBot().sendMessage(chatId, '⏰ В какое время ищем корт?', {
+            reply_markup: {
+              inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+            }
+          });
+        }
+      }
       
     } else if (dateType === 'custom') {
       const slotsData = await loadSlots(sport);
       if (!slotsData) {
-        await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText('❌ Не удалось загрузить данные о кортах. Попробуй позже.', {
+            chat_id: chatId,
+            message_id: messageId
+          });
+        } else {
+          await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
+        }
         return;
       }
       
       const availableDates = getAvailableDates(slotsData);
       if (availableDates.length === 0) {
-        await getBot().sendMessage(chatId, '😔 Нет доступных дат для бронирования.');
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          await getBot().editMessageText('😔 Нет доступных дат для бронирования.', {
+            chat_id: chatId,
+            message_id: messageId
+          });
+        } else {
+          await getBot().sendMessage(chatId, '😔 Нет доступных дат для бронирования.');
+        }
         return;
       }
       
@@ -1467,11 +1566,24 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         callback_data: `date_pick_${date}_${sport}`
       }));
       
-      await getBot().sendMessage(chatId, '📅 Выбери дату:', {
-        reply_markup: {
-          inline_keyboard: [dateButtons]
-        }
-      });
+      // Редактируем сообщение с выбором даты
+      const messageId = query.message?.message_id;
+      if (messageId) {
+        await getBot().editMessageText('📅 Выбери дату:', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [dateButtons]
+          }
+        });
+      } else {
+        // Fallback на sendMessage, если message_id недоступен
+        await getBot().sendMessage(chatId, '📅 Выбери дату:', {
+          reply_markup: {
+            inline_keyboard: [dateButtons]
+          }
+        });
+      }
     }
     return;
   }
@@ -1480,15 +1592,31 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data?.startsWith('select_another_date_')) {
     const sport = data.replace('select_another_date_', '') === 'padel' ? 'padel' : 'tennis';
     
-    await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📆 Сегодня', callback_data: `date_today_${sport}` }],
-          [{ text: '📆 Завтра', callback_data: `date_tomorrow_${sport}` }],
-          [{ text: '🗓 Указать дату', callback_data: `date_custom_${sport}` }]
-        ]
-      }
-    });
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      await getBot().editMessageText('📅 На какую дату ищем корт?', {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📆 Сегодня', callback_data: `date_today_${sport}` }],
+            [{ text: '📆 Завтра', callback_data: `date_tomorrow_${sport}` }],
+            [{ text: '🗓 Указать дату', callback_data: `date_custom_${sport}` }]
+          ]
+        }
+      });
+    } else {
+      // Fallback на sendMessage, если message_id недоступен
+      await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📆 Сегодня', callback_data: `date_today_${sport}` }],
+            [{ text: '📆 Завтра', callback_data: `date_tomorrow_${sport}` }],
+            [{ text: '🗓 Указать дату', callback_data: `date_custom_${sport}` }]
+          ]
+        }
+      });
+    }
     return;
   }
 
