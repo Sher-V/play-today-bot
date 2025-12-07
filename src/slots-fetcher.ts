@@ -16,7 +16,7 @@ import {
   FINDSPORT_CONFIGS,
   YCLIENTS_API_URL,
   API_URL
-} from './slots-constants';
+} from './constants/slots-constants';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {

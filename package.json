@@ -14,6 +14,8 @@
     "deploy": "npm run build && gcloud functions deploy playTodayBot --gen2 --runtime=nodejs20 --trigger-http --allow-unauthenticated --entry-point=telegramWebhook --set-env-vars BOT_TOKEN=$BOT_TOKEN --region=europe-west1 --source=.",
     "set-webhook": "curl -X POST \"https://api.telegram.org/bot$BOT_TOKEN/setWebhook\" -d \"url=$WEBHOOK_URL\"",
     "delete-webhook": "curl -X POST \"https://api.telegram.org/bot$BOT_TOKEN/deleteWebhook\"",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -30,6 +32,9 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/node-telegram-bot-api": "^0.64.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "eslint": "^8.56.0",
     "nodemon": "^3.1.11",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.2"

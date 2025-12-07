@@ -13,7 +13,7 @@ import {
   TENNIS_COURT_DISTRICTS,
   TENNIS_COURT_IS_CITY,
   TENNIS_COURT_LOCATIONS
-} from './tennis-constants';
+} from './constants/tennis-constants';
 import {
   PADEL_COURT_NAMES,
   PADEL_COURT_LINKS,
@@ -22,7 +22,7 @@ import {
   PADEL_COURT_DISTRICTS,
   PADEL_COURT_IS_CITY,
   PADEL_COURT_LOCATIONS
-} from './padel-constants';
+} from './constants/padel-constants';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -84,6 +84,14 @@ function getBot(): TelegramBot {
 }
 
 /**
+ * Извлекает сообщение об ошибке из объекта ошибки
+ */
+function getErrorMessage(error: unknown): string {
+  const err = error as { response?: { body?: { description?: string } }; message?: string };
+  return err?.response?.body?.description || err?.message || String(error);
+}
+
+/**
  * Безопасное обновление текста сообщения
  * Игнорирует ошибку "message is not modified"
  */
@@ -93,9 +101,9 @@ async function safeEditMessageText(
 ): Promise<TelegramBot.Message | boolean> {
   try {
     return await getBot().editMessageText(text, options);
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Игнорируем ошибку, если сообщение не изменилось
-    const errorMessage = error?.response?.body?.description || error?.message || String(error);
+    const errorMessage = getErrorMessage(error);
     if (errorMessage.includes('message is not modified')) {
       return true;
     }
@@ -113,9 +121,9 @@ async function safeEditMessageReplyMarkup(
 ): Promise<TelegramBot.Message | boolean> {
   try {
     return await getBot().editMessageReplyMarkup(markup, options);
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Игнорируем ошибку, если сообщение не изменилось
-    const errorMessage = error?.response?.body?.description || error?.message || String(error);
+    const errorMessage = getErrorMessage(error);
     if (errorMessage.includes('message is not modified')) {
       return true;
     }
@@ -133,9 +141,9 @@ async function safeAnswerCallbackQuery(
 ): Promise<boolean> {
   try {
     return await getBot().answerCallbackQuery(queryId, options);
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Игнорируем ошибки, связанные с истекшими или невалидными query
-    const errorMessage = error?.response?.body?.description || error?.message || String(error);
+    const errorMessage = getErrorMessage(error);
     if (
       errorMessage.includes('query is too old') ||
       errorMessage.includes('query ID is invalid') ||
@@ -399,26 +407,6 @@ function formatDateButton(dateKey: string): string {
 }
 
 /**
- * Создаёт клавиатуру с датами, распределяя кнопки по нескольким рядам
- */
-function getDatePickerKeyboard(dates: string[]): TelegramBot.InlineKeyboardButton[][] {
-  const buttons = dates.map(date => ({
-    text: formatDateButton(date),
-    callback_data: `date_pick_${date}`
-  }));
-  
-  // Распределяем кнопки по рядам (по 3 кнопки в ряд для лучшей читаемости)
-  const rows: TelegramBot.InlineKeyboardButton[][] = [];
-  const buttonsPerRow = 3;
-  
-  for (let i = 0; i < buttons.length; i += buttonsPerRow) {
-    rows.push(buttons.slice(i, i + buttonsPerRow));
-  }
-  
-  return rows;
-}
-
-/**
  * Форматирует время из ISO строки в формат "12:00"
  */
 function formatLastUpdatedTime(lastUpdated: string): string {
@@ -436,140 +424,6 @@ function formatLastUpdatedTime(lastUpdated: string): string {
     console.error('Ошибка форматирования времени:', error);
     return '';
   }
-}
-
-/**
- * Отправляет массив сообщений, разбивая длинные сообщения на части
- * Первое сообщение редактируется, если есть messageId, остальные отправляются как новые
- */
-async function sendMessages(
-  chatId: number,
-  messages: string[],
-  options?: {
-    messageId?: number;
-    parseMode?: 'Markdown' | 'HTML';
-    disableWebPagePreview?: boolean;
-    replyMarkup?: TelegramBot.InlineKeyboardMarkup;
-  }
-): Promise<void> {
-  if (messages.length === 0) return;
-
-  // Разбиваем каждое сообщение на части, если оно слишком длинное
-  const allParts: string[] = [];
-  for (const msg of messages) {
-    const parts = splitLongMessage(msg);
-    allParts.push(...parts);
-  }
-
-  // Отправляем первое сообщение
-  if (allParts.length > 0) {
-    const firstMessage = allParts[0];
-    const remainingParts = allParts.slice(1);
-
-    if (options?.messageId) {
-      // Редактируем существующее сообщение
-      await safeEditMessageText(firstMessage, {
-        chat_id: chatId,
-        message_id: options.messageId,
-        parse_mode: options.parseMode,
-        disable_web_page_preview: options.disableWebPagePreview,
-        // Клавиатуру добавляем только если это последнее сообщение
-        reply_markup: remainingParts.length === 0 ? options.replyMarkup : undefined
-      });
-    } else {
-      // Отправляем новое сообщение
-      await getBot().sendMessage(chatId, firstMessage, {
-        parse_mode: options?.parseMode,
-        disable_web_page_preview: options?.disableWebPagePreview,
-        reply_markup: remainingParts.length === 0 ? options?.replyMarkup : undefined
-      });
-    }
-
-    // Отправляем остальные части
-    for (let i = 0; i < remainingParts.length; i++) {
-      const isLast = i === remainingParts.length - 1;
-      await getBot().sendMessage(chatId, remainingParts[i], {
-        parse_mode: options?.parseMode,
-        disable_web_page_preview: options?.disableWebPagePreview,
-        reply_markup: isLast ? options?.replyMarkup : undefined
-      });
-    }
-  }
-}
-
-/**
- * Разбивает длинное сообщение на части по лимиту Telegram (4096 символов)
- * Старается не разрывать структуру (не разрывает корты посередине)
- */
-function splitLongMessage(message: string, maxLength: number = 4096): string[] {
-  if (message.length <= maxLength) {
-    return [message];
-  }
-
-  const parts: string[] = [];
-  const lines = message.split('\n');
-  let currentPart = '';
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lineWithNewline = line + '\n';
-
-    // Если одна строка уже превышает лимит, разбиваем её
-    if (line.length > maxLength) {
-      // Если текущая часть не пуста, сохраняем её
-      if (currentPart.trim()) {
-        parts.push(currentPart.trim());
-        currentPart = '';
-      }
-      // Разбиваем длинную строку на части (оставляем запас в 50 символов)
-      for (let j = 0; j < line.length; j += maxLength - 50) {
-        parts.push(line.substring(j, j + maxLength - 50));
-      }
-      continue;
-    }
-
-    // Проверяем, поместится ли строка в текущую часть
-    if (currentPart.length + lineWithNewline.length > maxLength) {
-      // Сохраняем текущую часть и начинаем новую
-      if (currentPart.trim()) {
-        parts.push(currentPart.trim());
-      }
-      currentPart = lineWithNewline;
-    } else {
-      currentPart += lineWithNewline;
-    }
-  }
-
-  // Добавляем последнюю часть, если она не пуста
-  if (currentPart.trim()) {
-    parts.push(currentPart.trim());
-  }
-
-  return parts.length > 0 ? parts : [message];
-}
-
-/**
- * Вычисляет количество страниц для пагинации
- */
-function calculatePages(siteSlots: { siteName: string; slots: Slot[] }[], maxLength: number = 3500): number {
-  if (siteSlots.length === 0) return 1;
-  
-  let currentLength = 0;
-  let pages = 1;
-  
-  for (const { siteName, slots } of siteSlots) {
-    // Примерная длина одного корта (название + слоты)
-    const estimatedLength = 200 + (slots.length * 50);
-    
-    if (currentLength + estimatedLength > maxLength && currentLength > 0) {
-      pages++;
-      currentLength = estimatedLength;
-    } else {
-      currentLength += estimatedLength;
-    }
-  }
-  
-  return pages;
 }
 
 /**
@@ -783,13 +637,6 @@ function getTimeKeyboard(selectedTimeSlots: string[], availableOptions: typeof t
       callback_data: `time_${opt.id}`
     }]),
     [{ text: '✔️ Готово', callback_data: 'time_done' }]
-  ];
-}
-
-// Генерация клавиатуры с кнопкой "Выбрать другую дату"
-function getSelectAnotherDateKeyboard(sport: 'tennis' | 'padel'): TelegramBot.InlineKeyboardButton[][] {
-  return [
-    [{ text: '📅 Выбрать другую дату', callback_data: `select_another_date_${sport}` }]
   ];
 }
 

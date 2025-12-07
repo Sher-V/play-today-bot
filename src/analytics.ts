@@ -38,7 +38,7 @@ export interface ButtonClickEvent {
   buttonId: string; // идентификатор кнопки (callback_data или текст)
   buttonLabel?: string; // отображаемый текст кнопки
   messageId?: number; // ID сообщения с кнопкой
-  context?: Record<string, any>; // дополнительный контекст
+  context?: Record<string, unknown>; // дополнительный контекст
   sessionId?: string; // идентификатор сессии пользователя
 }
 
@@ -140,12 +140,13 @@ async function saveToBigQuery(event: ButtonClickEvent): Promise<void> {
 
     await dataset.table(tableId).insert(rows);
     console.log(`✅ Event saved to BigQuery: ${event.buttonType}/${event.buttonId}`);
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Логируем детальную ошибку
+    const err = error as { message?: string; code?: string; errors?: unknown };
     console.error('❌ Error saving to BigQuery:', {
-      message: error?.message,
-      code: error?.code,
-      errors: error?.errors,
+      message: err?.message,
+      code: err?.code,
+      errors: err?.errors,
       datasetId,
       tableId,
       eventButtonId: event.buttonId,
