@@ -1,0 +1,111 @@
+name: Deploy to Google Cloud Functions
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+env:
+  REGION: europe-west1
+  NODE_VERSION: '20'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy Telegram Bot Function
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          USE_BIGQUERY: ${{ secrets.USE_BIGQUERY }}
+          BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
+          BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
+        run: |
+          ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
+          if [ -n "${USE_BIGQUERY}" ]; then
+            ENV_VARS="${ENV_VARS},USE_BIGQUERY=${USE_BIGQUERY}"
+          fi
+          if [ -n "${BIGQUERY_DATASET}" ]; then
+            ENV_VARS="${ENV_VARS},BIGQUERY_DATASET=${BIGQUERY_DATASET}"
+          fi
+          if [ -n "${BIGQUERY_TABLE}" ]; then
+            ENV_VARS="${ENV_VARS},BIGQUERY_TABLE=${BIGQUERY_TABLE}"
+          fi
+          gcloud functions deploy playTodayBot \
+            --gen2 \
+            --runtime=nodejs20 \
+            --trigger-http \
+            --allow-unauthenticated \
+            --entry-point=telegramWebhook \
+            --set-env-vars "${ENV_VARS}" \
+            --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
+            --region=${{ env.REGION }} \
+            --source=. \
+            --memory=256MB \
+            --timeout=60s \
+            --quiet
+
+      - name: Deploy Slots Fetcher Function
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          gcloud functions deploy slotsFetcher \
+            --gen2 \
+            --runtime=nodejs20 \
+            --trigger-http \
+            --allow-unauthenticated \
+            --entry-point=slotsFetcher \
+            --set-env-vars "GCS_BUCKET=${PROJECT_ID}-slots" \
+            --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
+            --region=${{ env.REGION }} \
+            --source=. \
+            --memory=256MB \
+            --timeout=120s \
+            --quiet
+
+      - name: Get Function URLs
+        id: get-urls
+        run: |
+          BOT_URL=$(gcloud functions describe playTodayBot --region=${{ env.REGION }} --format='value(serviceConfig.uri)' 2>/dev/null)
+          SLOTS_URL=$(gcloud functions describe slotsFetcher --region=${{ env.REGION }} --format='value(serviceConfig.uri)' 2>/dev/null)
+          echo "bot_url=$BOT_URL" >> $GITHUB_OUTPUT
+          echo "slots_url=$SLOTS_URL" >> $GITHUB_OUTPUT
+          echo "✅ Telegram Bot URL: $BOT_URL"
+          echo "✅ Slots Fetcher URL: $SLOTS_URL"
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed Functions:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Telegram Bot**: ${{ steps.get-urls.outputs.bot_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Slots Fetcher**: ${{ steps.get-urls.outputs.slots_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Update Telegram webhook: \`curl -X POST \"https://api.telegram.org/bot\$BOT_TOKEN/setWebhook\" -d \"url=${{ steps.get-urls.outputs.bot_url }}\"\`" >> $GITHUB_STEP_SUMMARY
+
