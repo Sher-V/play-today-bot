@@ -657,17 +657,28 @@ function getLocationKeyboard(selectedLocations: string[]): TelegramBot.InlineKey
  * Получает доступные временные диапазоны на основе текущего времени
  * Если dateKey - сегодняшняя дата, фильтруем прошедшие диапазоны
  */
+// Функция для получения московского времени (GMT+3)
+function getMoscowTime(): Date {
+  const now = new Date();
+  // Получаем UTC время
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  // Добавляем 3 часа для московского времени (GMT+3)
+  const moscowTime = new Date(utc + (3 * 3600000));
+  return moscowTime;
+}
+
 function getAvailableTimeOptions(dateKey: string): typeof timeOptions {
-  const today = new Date().toISOString().split('T')[0];
+  // Получаем сегодняшнюю дату в московском времени
+  const moscowNow = getMoscowTime();
+  const today = moscowNow.toISOString().split('T')[0];
   
   // Если это не сегодня, возвращаем все опции
   if (dateKey !== today) {
     return timeOptions;
   }
   
-  // Если это сегодня, фильтруем прошедшие диапазоны
-  const now = new Date();
-  const currentHour = now.getHours();
+  // Если это сегодня, фильтруем прошедшие диапазоны по московскому времени
+  const currentHour = moscowNow.getHours();
   
   return timeOptions.filter(opt => {
     if (opt.id === 'any') {
