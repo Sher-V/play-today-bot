@@ -1,3 +1,6 @@
+import { TennisSiteId } from './tennis-constants';
+import { PadelSiteId } from './padel-constants';
+
 // Конфигурация для запросов к reservi.ru (Импульс, Спартак, ITC)
 export interface SiteConfig {
   name: string;           // Название площадки для идентификации
@@ -51,7 +54,7 @@ export interface FindSportConfig {
 // ⬇️ КОНФИГУРАЦИИ ПЛОЩАДОК ⬇️
 export const SITE_CONFIGS: SiteConfig[] = [
   {
-    name: "impuls",
+    name: TennisSiteId.IMPULS,
     clubId: "944b2756-15b3-11ea-80c2-0025902e02c1",
     clubTitle: "ИМПУЛЬС",
     serviceId: "411cd3d2-1754-11ea-80c2-0025902e02c1",
@@ -59,7 +62,7 @@ export const SITE_CONFIGS: SiteConfig[] = [
     daysAhead: 14
   },
   {
-    name: "spartak-grunt",
+    name: TennisSiteId.SPARTAK_GRUNT,
     clubId: "5a810c4f-9f36-11ea-bbca-0050568bac88",
     clubTitle: "КРЫТЫЕ КОРТЫ ГРУНТ",
     apiKey: "81059286-b4a9-4069-9fe8-1420f6773265",
@@ -67,7 +70,7 @@ export const SITE_CONFIGS: SiteConfig[] = [
     daysAhead: 14
   },
   {
-    name: "spartak-hard",
+    name: TennisSiteId.SPARTAK_HARD,
     clubId: "53f148cf-9f36-11ea-bbca-0050568bac88",
     clubTitle: "КРЫТЫЕ КОРТЫ ХАРД",
     apiKey: "81059286-b4a9-4069-9fe8-1420f6773265",
@@ -75,7 +78,7 @@ export const SITE_CONFIGS: SiteConfig[] = [
     daysAhead: 14
   },
   {
-    name: "itc-tsaritsyno",
+    name: TennisSiteId.ITC_TSARITSYNO,
     clubId: "575773d6-2845-11ed-168d-0050568369e4",
     clubTitle: "ITC by WeGym Теннисный Центр Царицыно",
     serviceId: "4c590be8-284a-11ed-e888-0050568369e4",
@@ -83,7 +86,7 @@ export const SITE_CONFIGS: SiteConfig[] = [
     daysAhead: 14
   },
   {
-    name: "itc-mytischy",
+    name: TennisSiteId.ITC_MYTISCHY,
     clubId: "da3c3c8b-b4b0-11eb-bbf6-0050568342b3",
     clubTitle: "ITC by WeGym Теннисный Центр Мытищи",
     serviceId: "6732c6ae-b971-11eb-bbf6-0050568342b3",
@@ -91,7 +94,7 @@ export const SITE_CONFIGS: SiteConfig[] = [
     daysAhead: 14
   },
   {
-    name: "vidnyysport",
+    name: TennisSiteId.VIDNYSPORT,
     clubId: "b52ec86b-b7b5-11eb-80ed-ee78ef712c1b",
     clubTitle: 'Теннисный клуб "I Love Tennis"',
     apiKey: "f1177549-d4aa-4480-8f6e-3543a6c41005",
@@ -103,7 +106,7 @@ export const SITE_CONFIGS: SiteConfig[] = [
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ТЕННИС ⬇️
 export const YCLIENTS_CONFIGS: YClientsConfig[] = [
   {
-    name: "pro-tennis-kashirka",
+    name: TennisSiteId.PRO_TENNIS_KASHIRKA,
     locationId: 967881,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b1044864.yclients.com",
@@ -112,7 +115,7 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     roomName: null
   },
   {
-    name: "megasport-tennis",
+    name: TennisSiteId.MEGASPORT_TENNIS,
     locationId: 852917,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b916289.yclients.com",
@@ -121,7 +124,7 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     roomName: null
   },
   {
-    name: "gallery-cort",
+    name: TennisSiteId.GALLERY_CORT,
     locationId: 693093,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b735517.yclients.com",
@@ -131,7 +134,7 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     staffId: null  // Этот корт использует staff_id: null
   },
   {
-    name: "tennis-capital",
+    name: TennisSiteId.TENNIS_CAPITAL,
     locationId: 818035,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b876619.yclients.com",
@@ -152,7 +155,7 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ПАДЕЛ ⬇️
 export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
   {
-    name: "rocket-padel-club",
+    name: PadelSiteId.ROCKET_PADEL_CLUB,
     locationId: 1478703,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://n1647756.yclients.com",
@@ -162,7 +165,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     staffId: -1  // Используем staff_id: -1 как в примере запроса
   },
   {
-    name: "padel-friends",
+    name: PadelSiteId.PADEL_FRIENDS,
     locationId: 804153,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b861100.yclients.com",
@@ -172,7 +175,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     staffId: -1  // Используем staff_id: -1 как в примере запроса
   },
   {
-    name: "buenos-padel",
+    name: PadelSiteId.BUENOS_PADEL,
     locationId: 1457979,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b1555275.yclients.com",
@@ -190,7 +193,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     }
   },
   {
-    name: "padel-belozer",
+    name: PadelSiteId.PADEL_BELOZER,
     locationId: 1583670,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b1781322.yclients.com",
@@ -200,7 +203,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     staffId: -1  // Используем staff_id: -1 как в примере запроса
   },
   {
-    name: "tennis-capital-padel-savelovskaya",
+    name: PadelSiteId.TENNIS_CAPITAL_PADEL_SAVELOVSKAYA,
     locationId: 1450185,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b1776180.yclients.com",
@@ -210,7 +213,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     // staffId не задан (undefined) - поле staff_id не будет включено в запрос
   },
   {
-    name: "tennis-capital-padel-vdnh",
+    name: PadelSiteId.TENNIS_CAPITAL_PADEL_VDNH,
     locationId: 1553949,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b1776180.yclients.com",
@@ -220,7 +223,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     // staffId не задан (undefined) - поле staff_id не будет включено в запрос
   },
   {
-    name: "up2-padel",
+    name: PadelSiteId.UP2_PADEL,
     locationId: 1288180,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://n1422626.yclients.com",
@@ -230,7 +233,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     // staffId не задан (undefined) - поле staff_id не будет включено в запрос
   },
   {
-    name: "bandehaarenaclub",
+    name: PadelSiteId.BANDEHAARENACLUB,
     locationId: 1449294,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://n1612373.yclients.com",
@@ -240,7 +243,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     // staffId не задан (undefined) - поле staff_id не будет включено в запрос
   },
   {
-    name: "orbita-tennis",
+    name: PadelSiteId.ORBITA_TENNIS,
     locationId: 1066130,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b1159028.yclients.com",
@@ -250,7 +253,7 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
     staffId: -1  // Используем staff_id: -1 как в примере запроса
   },
   {
-    name: "v-padel",
+    name: PadelSiteId.V_PADEL,
     locationId: 1441312,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://n1602942.yclients.com",
@@ -266,7 +269,7 @@ export const YCLIENTS_API_URL = 'https://platform.yclients.com/api/v1/b2c/bookin
 // ⬇️ КОНФИГУРАЦИИ VIVACRM (api.vivacrm.ru) ⬇️
 export const VIVACRM_CONFIGS: VivaCrmConfig[] = [
   {
-    name: "luzhniki-tennis",
+    name: TennisSiteId.LUZHNIKI_TENNIS,
     tenantId: "ajV1T2",
     serviceId: "77075a2c-873a-411f-8073-028a2051cf2d",
     origin: "https://tennis.luzhniki.ru",
@@ -277,7 +280,7 @@ export const VIVACRM_CONFIGS: VivaCrmConfig[] = [
 // ⬇️ КОНФИГУРАЦИИ MOYKLASS (app.moyklass.com) ⬇️
 export const MOYKLASS_CONFIGS: MoyKlassConfig[] = [
   {
-    name: "cooltennis-baumanskaya",
+    name: TennisSiteId.COOLTENNIS_BAUMANSKAYA,
     widgetId: "01RNDZfjBowzq7hT06oW4BJJi7TGoyMtovbx",
     origin: "https://cooltennis.ru",
     weeksAhead: 2
@@ -287,7 +290,7 @@ export const MOYKLASS_CONFIGS: MoyKlassConfig[] = [
 // ⬇️ КОНФИГУРАЦИИ FINDSPORT (findsport.ru) ⬇️
 export const FINDSPORT_CONFIGS: FindSportConfig[] = [
   {
-    name: "olonetskiy",
+    name: TennisSiteId.OLONETSKIY,
     playgroundId: "5154",
     courts: {
       "9702": "Корт 2",
@@ -299,7 +302,7 @@ export const FINDSPORT_CONFIGS: FindSportConfig[] = [
     cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; phpsession=cf6438fb8c534abc640608072d387832"
   },
   {
-    name: "slice-tennis",
+    name: TennisSiteId.SLICE_TENNIS,
     playgroundId: "4749",
     courts: {
       "8958": "Корт 1",
