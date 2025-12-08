@@ -11,7 +11,18 @@ export enum PadelSiteId {
   ORBITA_TENNIS = "orbita-tennis",
   V_PADEL = "v-padel",
   KORTY_SETKI = "korty-setki",
-  PADEL_VIDNOE = "padel-vidnoe"
+  PADEL_VIDNOE = "padel-vidnoe",
+  PADEL_HUB_NAGATINSKAYA = "padel-hub-nagatinskaya",
+  PADEL_HUB_NAGATINSKAYA_PREMIUM = "padel-hub-nagatinskaya-premium",
+  PADEL_HUB_TEREKHOVO = "padel-hub-terehovo",
+  PADEL_HUB_YASENEVO = "padel-hub-yasenevo",
+  PADEL_HUB_SKOLKOVO = "padel-hub-skolkovo",
+  MOSCOW_PDL_LUZHNIKI = "moscow-pdl-luzhniki",
+  PADEL_NOK_KRYLATSKOE = "padel-nok-krylatskoe",
+  PARI_PADEL_SEVER = "pari-padel-sever",
+  FIRST_PADEL_CLUB = "first-padel-club",
+  ZARYAD_PADEL = "zaryad-padel",
+  PADEL_LEND = "padel-lend"
 }
 
 // Названия площадок для отображения (падел)
@@ -27,7 +38,18 @@ export const PADEL_COURT_NAMES: Record<string, string> = {
   [PadelSiteId.ORBITA_TENNIS]: "Орбита Падел",
   [PadelSiteId.V_PADEL]: "V Padel",
   [PadelSiteId.KORTY_SETKI]: "Корты-Сетки",
-  [PadelSiteId.PADEL_VIDNOE]: "Падел Видное"
+  [PadelSiteId.PADEL_VIDNOE]: "Падел Видное",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA]: "Падел Хаб Нагатинская",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM]: "Падел Хаб Нагатинская Премиум",
+  [PadelSiteId.PADEL_HUB_TEREKHOVO]: "Падел Хаб Терехово",
+  [PadelSiteId.PADEL_HUB_YASENEVO]: "Падел Хаб Ясенево",
+  [PadelSiteId.PADEL_HUB_SKOLKOVO]: "Падел Хаб Сколково",
+  [PadelSiteId.MOSCOW_PDL_LUZHNIKI]: "Moscow PDL (Лужники)",
+  [PadelSiteId.PADEL_NOK_KRYLATSKOE]: "Падел Нок Крылатское",
+  [PadelSiteId.PARI_PADEL_SEVER]: "Пари Падел Север",
+  [PadelSiteId.FIRST_PADEL_CLUB]: "First Padel Club",
+  [PadelSiteId.ZARYAD_PADEL]: "Заряд Падел",
+  [PadelSiteId.PADEL_LEND]: "Падел Ленд"
 };
 
 // Ссылки на бронирование кортов (падел)
@@ -43,7 +65,18 @@ export const PADEL_COURT_LINKS: Record<string, string> = {
   [PadelSiteId.ORBITA_TENNIS]: "https://orbitatennis.ru/",
   [PadelSiteId.V_PADEL]: "https://v-padel.ru/",
   [PadelSiteId.KORTY_SETKI]: "https://korty-setki.ru/",
-  [PadelSiteId.PADEL_VIDNOE]: "https://padelvidnoe.ru/"
+  [PadelSiteId.PADEL_VIDNOE]: "https://padelvidnoe.ru/",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA]: "https://padlhub.ru/padel_nagatinskaya",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM]: "https://padlhub.ru/padel_nagatinskayapremium",
+  [PadelSiteId.PADEL_HUB_TEREKHOVO]: "https://padlhub.ru/padel_terehovo",
+  [PadelSiteId.PADEL_HUB_YASENEVO]: "https://padlhub.ru/padl_yas",
+  [PadelSiteId.PADEL_HUB_SKOLKOVO]: "https://padlhub.ru/skolkovo",
+  [PadelSiteId.MOSCOW_PDL_LUZHNIKI]: "https://moscowpdl.ru/#o6T6ej",
+  [PadelSiteId.PADEL_NOK_KRYLATSKOE]: "https://padelnok.ru/#booking",
+  [PadelSiteId.PARI_PADEL_SEVER]: "https://paripadel.ru/pari-padel-8-marta/#MQ5zOX",
+  [PadelSiteId.FIRST_PADEL_CLUB]: "https://firstpadel.ru/",
+  [PadelSiteId.ZARYAD_PADEL]: "https://zaryadpadel.ru/",
+  [PadelSiteId.PADEL_LEND]: "https://pdlland.ru/"
 };
 
 // Ссылки на карты кортов (падел)
@@ -59,7 +92,18 @@ export const PADEL_COURT_MAPS: Record<string, string> = {
   [PadelSiteId.ORBITA_TENNIS]: "https://yandex.ru/maps/org/orbita_padel/113012593244/?ll=37.395581%2C55.649413&z=13.19",
   [PadelSiteId.V_PADEL]: "https://yandex.ru/maps/org/v_padel/54876592176/?indoorLevel=5&ll=37.407196%2C55.884969&z=16.96",
   [PadelSiteId.KORTY_SETKI]: "https://yandex.ru/maps/org/korty_setki/75670705497/?ll=37.823352%2C55.686999&z=16.96",
-  [PadelSiteId.PADEL_VIDNOE]: "https://yandex.ru/maps/-/CLg~UT6~"
+  [PadelSiteId.PADEL_VIDNOE]: "https://yandex.ru/maps/-/CLg~UT6~",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA]: "https://yandex.ru/maps/org/padlkhab/154806505713/?ll=37.632421%2C55.683666&z=16.85",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM]: "https://yandex.ru/maps/org/padlkhab/117487922561/?ll=37.627416%2C55.684889&z=16.67",
+  [PadelSiteId.PADEL_HUB_TEREKHOVO]: "https://yandex.ru/maps/org/padlkhab/53961082429/?ll=37.458532%2C55.743654&z=16.67",
+  [PadelSiteId.PADEL_HUB_YASENEVO]: "https://yandex.ru/maps/org/padlkhab/164517780240/?ll=37.533416%2C55.601849&z=16.67",
+  [PadelSiteId.PADEL_HUB_SKOLKOVO]: "https://yandex.ru/maps/org/padlkhab/185911964164/?indoorLevel=1&ll=37.402181%2C55.704012&z=16.67",
+  [PadelSiteId.MOSCOW_PDL_LUZHNIKI]: "https://yandex.ru/maps/org/moscow_pdl/20374934949/?indoorLevel=1&ll=37.564221%2C55.712837&z=16.96",
+  [PadelSiteId.PADEL_NOK_KRYLATSKOE]: "https://yandex.ru/maps/org/padel_nok/96119710948/?ll=37.355650%2C55.787938&z=16.96",
+  [PadelSiteId.PARI_PADEL_SEVER]: "https://yandex.ru/maps/org/pari_padel/86395826761/?ll=37.632758%2C55.748933&z=12.5",
+  [PadelSiteId.FIRST_PADEL_CLUB]: "https://yandex.ru/maps/org/first_padel_club/190481243881/?ll=37.725445%2C55.737824&z=11.38",
+  [PadelSiteId.ZARYAD_PADEL]: "https://yandex.ru/maps/org/zaryad_padel/163039505344/?ll=37.476869%2C55.674996&z=16.96",
+  [PadelSiteId.PADEL_LEND]: "https://yandex.ru/maps/org/padel_lend/210143639327/?indoorLevel=1&ll=37.395195%2C55.858943&z=16.96"
 };
 
 // Маппинг метро/города для кортов (падел)
@@ -75,7 +119,18 @@ export const PADEL_COURT_METRO: Record<string, string> = {
   [PadelSiteId.V_PADEL]: "Петровско-Разумовская",
   [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи",
   [PadelSiteId.KORTY_SETKI]: "Алексеевская",
-  [PadelSiteId.PADEL_VIDNOE]: "Видное"
+  [PadelSiteId.PADEL_VIDNOE]: "Видное",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA]: "Нагатинская",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM]: "Нагатинская",
+  [PadelSiteId.PADEL_HUB_TEREKHOVO]: "Терехово",
+  [PadelSiteId.PADEL_HUB_YASENEVO]: "Ясенево",
+  [PadelSiteId.PADEL_HUB_SKOLKOVO]: "Кунцевская",
+  [PadelSiteId.MOSCOW_PDL_LUZHNIKI]: "Воробьевы горы",
+  [PadelSiteId.PADEL_NOK_KRYLATSKOE]: "Крылатское",
+  [PadelSiteId.PARI_PADEL_SEVER]: "ТТК",
+  [PadelSiteId.FIRST_PADEL_CLUB]: "",
+  [PadelSiteId.ZARYAD_PADEL]: "Юго-Западная",
+  [PadelSiteId.PADEL_LEND]: "Подмосковье"
 };
 
 // Маппинг округов/районов для кортов (падел)
@@ -91,13 +146,25 @@ export const PADEL_COURT_DISTRICTS: Record<string, string> = {
   [PadelSiteId.V_PADEL]: "САО",
   [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи",
   [PadelSiteId.KORTY_SETKI]: "СВАО",
-  [PadelSiteId.PADEL_VIDNOE]: "Видное"
+  [PadelSiteId.PADEL_VIDNOE]: "Видное",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA]: "ЮАО",
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM]: "ЮАО",
+  [PadelSiteId.PADEL_HUB_TEREKHOVO]: "ЗАО",
+  [PadelSiteId.PADEL_HUB_YASENEVO]: "ЮЗАО",
+  [PadelSiteId.PADEL_HUB_SKOLKOVO]: "ЗАО",
+  [PadelSiteId.MOSCOW_PDL_LUZHNIKI]: "ЦАО",
+  [PadelSiteId.PADEL_NOK_KRYLATSKOE]: "ЗАО",
+  [PadelSiteId.PARI_PADEL_SEVER]: "СЗАО",
+  [PadelSiteId.FIRST_PADEL_CLUB]: "ЮЗАО",
+  [PadelSiteId.ZARYAD_PADEL]: "ЗАО",
+  [PadelSiteId.PADEL_LEND]: "Подмосковье"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
 export const PADEL_COURT_IS_CITY: Record<string, boolean> = {
   [PadelSiteId.ROCKET_PADEL_CLUB]: true,
-  [PadelSiteId.PADEL_VIDNOE]: true
+  [PadelSiteId.PADEL_VIDNOE]: true,
+  [PadelSiteId.PADEL_LEND]: true
 };
 
 // Маппинг кортов к локациям (падел)
@@ -113,6 +180,17 @@ export const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
   [PadelSiteId.ORBITA_TENNIS]: ["west"],
   [PadelSiteId.V_PADEL]: ["north"],
   [PadelSiteId.KORTY_SETKI]: ["north"],
-  [PadelSiteId.PADEL_VIDNOE]: ["moscow-region"]
+  [PadelSiteId.PADEL_VIDNOE]: ["moscow-region"],
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA]: ["south"],
+  [PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM]: ["south"],
+  [PadelSiteId.PADEL_HUB_TEREKHOVO]: ["west"],
+  [PadelSiteId.PADEL_HUB_YASENEVO]: ["south"],
+  [PadelSiteId.PADEL_HUB_SKOLKOVO]: ["west"],
+  [PadelSiteId.MOSCOW_PDL_LUZHNIKI]: ["center"],
+  [PadelSiteId.PADEL_NOK_KRYLATSKOE]: ["west"],
+  [PadelSiteId.PARI_PADEL_SEVER]: ["north", "west"],
+  [PadelSiteId.FIRST_PADEL_CLUB]: ["south", "west"],
+  [PadelSiteId.ZARYAD_PADEL]: ["west", "south"],
+  [PadelSiteId.PADEL_LEND]: ["moscow-region"]
 };
 

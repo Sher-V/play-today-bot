@@ -286,13 +286,94 @@ export const SITE_PADEL_CONFIGS: SiteConfig[] = [
   },
 ];
 
-// ⬇️ КОНФИГУРАЦИИ VIVACRM (api.vivacrm.ru) ⬇️
+// ⬇️ КОНФИГУРАЦИИ VIVACRM (api.vivacrm.ru) - ТЕННИС ⬇️
 export const VIVACRM_CONFIGS: VivaCrmConfig[] = [
   {
     name: TennisSiteId.LUZHNIKI_TENNIS,
     tenantId: "ajV1T2",
     serviceId: "77075a2c-873a-411f-8073-028a2051cf2d",
     origin: "https://tennis.luzhniki.ru",
+    daysAhead: 14
+  },
+];
+
+// ⬇️ КОНФИГУРАЦИИ VIVACRM (api.vivacrm.ru) - ПАДЕЛ ⬇️
+export const VIVACRM_PADEL_CONFIGS: VivaCrmConfig[] = [
+  {
+    name: PadelSiteId.PADEL_HUB_NAGATINSKAYA,
+    tenantId: "iSkq6G",
+    serviceId: "22b928b2-1ba6-4491-bc43-756676fcd723",
+    origin: "https://padlhub.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_HUB_NAGATINSKAYA_PREMIUM,
+    tenantId: "iSkq6G",
+    serviceId: "1c54e3b4-0421-482e-8faf-0c1cd5fdaf3d",
+    origin: "https://padlhub.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_HUB_TEREKHOVO,
+    tenantId: "iSkq6G",
+    serviceId: "2f4155ad-7bc0-4a15-a12c-da7fce15c37a",
+    origin: "https://padlhub.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_HUB_YASENEVO,
+    tenantId: "iSkq6G",
+    serviceId: "d9a5061a-e027-4960-9029-4bf5ec8a0c64",
+    origin: "https://padlhub.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_HUB_SKOLKOVO,
+    tenantId: "iSkq6G",
+    serviceId: "e2caa535-6660-479a-bd32-3638ba7f6b89",
+    origin: "https://padlhub.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.MOSCOW_PDL_LUZHNIKI,
+    tenantId: "wTksKv",
+    serviceId: "08b5ef55-d1b4-4736-8152-4d5d5c52a4ab",
+    origin: "https://moscowpdl.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_NOK_KRYLATSKOE,
+    tenantId: "l8jvFs",
+    serviceId: "cbbb9a75-810f-4801-98ac-f3030e272862",
+    origin: "https://padelnok.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PARI_PADEL_SEVER,
+    tenantId: "lhfQ7C",
+    serviceId: "5bdeab67-be8d-4cc5-8292-2383552b601c",
+    origin: "https://paripadel.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.FIRST_PADEL_CLUB,
+    tenantId: "4yMzOR",
+    serviceId: "ecccea4a-a342-4e75-a8ba-983dd51044ca",
+    origin: "https://firstpadel.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.ZARYAD_PADEL,
+    tenantId: "RZlKfH",
+    serviceId: "79abb681-df51-4436-afa5-b2771d3c508d",
+    origin: "https://zaryadpadel.ru",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_LEND,
+    tenantId: "MxQjPt",
+    serviceId: "d2fce4fb-4456-40ce-b520-6f4fb055058f",
+    origin: "https://pdlland.ru",
     daysAhead: 14
   },
 ];

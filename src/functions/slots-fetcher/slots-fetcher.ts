@@ -9,6 +9,7 @@ import {
   YCLIENTS_CONFIGS,
   YCLIENTS_PADEL_CONFIGS,
   VIVACRM_CONFIGS,
+  VIVACRM_PADEL_CONFIGS,
   MOYKLASS_CONFIGS,
   FINDSPORT_CONFIGS,
   API_URL
@@ -449,6 +450,18 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
     try {
       console.log(`Fetching slots for: ${config.name} (yclients)`);
       result.sites[config.name] = await fetchYClientsSlotsForSite(config);
+      console.log(`✅ Successfully fetched ${config.name}`);
+    } catch (error) {
+      console.error(`Error fetching ${config.name}:`, error);
+      result.sites[config.name] = {};
+    }
+  }
+  
+  // VivaCRM (падел)
+  for (const config of VIVACRM_PADEL_CONFIGS) {
+    try {
+      console.log(`Fetching slots for: ${config.name} (vivacrm)`);
+      result.sites[config.name] = await fetchVivaCrmSlotsForSite(config);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
