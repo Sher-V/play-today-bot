@@ -124,7 +124,7 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.PRO_TENNIS_KASHIRKA]: ["south"],
   [TennisSiteId.MEGASPORT_TENNIS]: ["south"],
   [TennisSiteId.GALLERY_CORT]: ["south"],
-  [TennisSiteId.TENNIS_CAPITAL]: ["north"],
+  [TennisSiteId.TENNIS_CAPITAL]: ["north", "center"],
   [TennisSiteId.LUZHNIKI_TENNIS]: ["center"],
   [TennisSiteId.COOLTENNIS_BAUMANSKAYA]: ["east"],
   [TennisSiteId.OLONETSKIY]: ["north"],
