@@ -83,31 +83,71 @@ interface AllSlotsResult {
 }
 
 /**
- * Сохраняет данные в Cloud Storage или локальный файл
+ * Сохраняет данные в Cloud Storage или локальный файл по датам
+ * Разбивает данные на файлы по датам: actual-{sport}-slots-YYYY-MM-DD.json
  */
-async function saveToStorage(data: AllSlotsResult, fileName: string, localPath: string): Promise<string> {
-  const jsonData = JSON.stringify(data, null, 2);
-  
-  if (USE_LOCAL_STORAGE) {
-    // Локальный режим — сохраняем в файл
-    fs.writeFileSync(localPath, jsonData, 'utf-8');
-    console.log(`💾 Saved to local file: ${localPath}`);
-    return `file://${localPath}`;
+async function saveToStorage(data: AllSlotsResult, sport: 'tennis' | 'padel'): Promise<string[]> {
+  // Собираем все уникальные даты из всех сайтов
+  const datesSet = new Set<string>();
+  for (const site of Object.values(data.sites)) {
+    for (const date of Object.keys(site)) {
+      datesSet.add(date);
+    }
   }
   
-  // Cloud Storage
-  const bucket = storage!.bucket(BUCKET_NAME!);
-  const file = bucket.file(fileName);
+  const dates = Array.from(datesSet).sort();
+  const savedFiles: string[] = [];
   
-  await file.save(jsonData, {
-    contentType: 'application/json',
-    metadata: {
-      cacheControl: 'no-cache'
+  // Сохраняем каждый файл по дате
+  for (const date of dates) {
+    // Формируем данные только для этой даты
+    const dateData: AllSlotsResult = {
+      lastUpdated: data.lastUpdated,
+      sites: {}
+    };
+    
+    // Собираем слоты только для этой даты
+    for (const [siteName, siteSlots] of Object.entries(data.sites)) {
+      if (siteSlots[date] && siteSlots[date].length > 0) {
+        dateData.sites[siteName] = {
+          [date]: siteSlots[date]
+        };
+      }
     }
-  });
+    
+    // Пропускаем, если для этой даты нет слотов
+    if (Object.keys(dateData.sites).length === 0) {
+      continue;
+    }
+    
+    // Формируем имя файла с датой
+    const fileName = `actual-${sport}-slots-${date}.json`;
+    const localPath = path.join(process.cwd(), fileName);
+    const jsonData = JSON.stringify(dateData, null, 2);
+    
+    if (USE_LOCAL_STORAGE) {
+      // Локальный режим — сохраняем в файл
+      fs.writeFileSync(localPath, jsonData, 'utf-8');
+      console.log(`💾 Saved to local file: ${localPath}`);
+      savedFiles.push(`file://${localPath}`);
+    } else {
+      // Cloud Storage
+      const bucket = storage!.bucket(BUCKET_NAME!);
+      const file = bucket.file(fileName);
+      
+      await file.save(jsonData, {
+        contentType: 'application/json',
+        metadata: {
+          cacheControl: 'no-cache'
+        }
+      });
+      
+      console.log(`☁️ Saved to gs://${BUCKET_NAME}/${fileName}`);
+      savedFiles.push(`gs://${BUCKET_NAME}/${fileName}`);
+    }
+  }
   
-  console.log(`☁️ Saved to gs://${BUCKET_NAME}/${fileName}`);
-  return `gs://${BUCKET_NAME}/${fileName}`;
+  return savedFiles;
 }
 
 /**
@@ -481,9 +521,12 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
 export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunctionResponse) => {
   try {
     // GET - возвращаем данные из Cloud Storage
+    // Поддерживает параметры: ?sport=tennis|padel&date=YYYY-MM-DD
     if (req.method === 'GET') {
-      // Определяем тип спорта из query параметра или body для GET запросов
+      // Определяем тип спорта и дату из query параметров
       let sport = 'tennis';
+      let date: string | null = null;
+      
       if (req.url) {
         try {
           const url = new URL(req.url, 'http://localhost');
@@ -491,30 +534,38 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
           if (sportParam === 'padel' || sportParam === 'tennis') {
             sport = sportParam;
           }
+          date = url.searchParams.get('date');
         } catch (e) {
           // Если не удалось распарсить URL, пробуем из body
-          const body = req.body as { sport?: string } | undefined;
+          const body = req.body as { sport?: string; date?: string } | undefined;
           if (body?.sport === 'padel' || body?.sport === 'tennis') {
             sport = body.sport;
           }
+          date = body?.date || null;
         }
       } else {
         // Если нет URL, пробуем из body
-        const body = req.body as { sport?: string } | undefined;
+        const body = req.body as { sport?: string; date?: string } | undefined;
         if (body?.sport === 'padel' || body?.sport === 'tennis') {
           sport = body.sport;
         }
+        date = body?.date || null;
       }
       
-      const isPadel = sport === 'padel';
-      const fileName = isPadel ? PADEL_SLOTS_FILE : TENNIS_SLOTS_FILE;
-      const localPath = isPadel ? PADEL_LOCAL_SLOTS_PATH : TENNIS_LOCAL_SLOTS_PATH;
+      // Если дата не указана, возвращаем сообщение об ошибке
+      if (!date) {
+        res.status(400).json({ error: 'Date parameter is required. Use ?sport=tennis|padel&date=YYYY-MM-DD' });
+        return;
+      }
+      
+      const fileName = `actual-${sport}-slots-${date}.json`;
+      const localPath = path.join(process.cwd(), fileName);
       
       const data = await loadFromStorage(fileName, localPath);
       if (data) {
         res.status(200).json(data);
       } else {
-        res.status(200).json({ message: `No ${sport} data yet. Trigger POST to fetch.` });
+        res.status(404).json({ message: `No ${sport} data found for date ${date}.` });
       }
       return;
     }
@@ -529,10 +580,10 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
         fetchAllPadelSlots()
       ]);
       
-      // Сохраняем оба файла
-      const [tennisStoragePath, padelStoragePath] = await Promise.all([
-        saveToStorage(tennisData, TENNIS_SLOTS_FILE, TENNIS_LOCAL_SLOTS_PATH),
-        saveToStorage(padelData, PADEL_SLOTS_FILE, PADEL_LOCAL_SLOTS_PATH)
+      // Сохраняем оба файла по датам
+      const [tennisStoragePaths, padelStoragePaths] = await Promise.all([
+        saveToStorage(tennisData, 'tennis'),
+        saveToStorage(padelData, 'padel')
       ]);
       
       // Считаем статистику для тенниса
@@ -555,6 +606,8 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
       
       console.log(`✅ Fetched ${tennisTotalSlots} tennis slots from ${tennisSiteCount} sites`);
       console.log(`✅ Fetched ${padelTotalSlots} padel slots from ${padelSiteCount} sites`);
+      console.log(`📁 Saved ${tennisStoragePaths.length} tennis date files`);
+      console.log(`📁 Saved ${padelStoragePaths.length} padel date files`);
       
       res.status(200).json({
         success: true,
@@ -563,13 +616,15 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
           lastUpdated: tennisData.lastUpdated,
           sitesCount: tennisSiteCount,
           totalSlots: tennisTotalSlots,
-          storagePath: tennisStoragePath
+          filesCount: tennisStoragePaths.length,
+          storagePaths: tennisStoragePaths
         },
         padel: {
           lastUpdated: padelData.lastUpdated,
           sitesCount: padelSiteCount,
           totalSlots: padelTotalSlots,
-          storagePath: padelStoragePath
+          filesCount: padelStoragePaths.length,
+          storagePaths: padelStoragePaths
         },
         mode: USE_LOCAL_STORAGE ? 'local' : 'cloud'
       });

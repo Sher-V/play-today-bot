@@ -57,10 +57,14 @@ interface SlotsData {
 // Cloud Storage настройки
 const BUCKET_NAME = process.env.GCS_BUCKET;
 const USE_PROD_ACTUAL_SLOTS = process.env.USE_PROD_ACTUAL_SLOTS === 'true';
-const TENNIS_SLOTS_FILE = 'actual-tennis-slots.json';
-const PADEL_SLOTS_FILE = 'actual-padel-slots.json';
-const TENNIS_LOCAL_SLOTS_PATH = path.join(process.cwd(), TENNIS_SLOTS_FILE);
-const PADEL_LOCAL_SLOTS_PATH = path.join(process.cwd(), PADEL_SLOTS_FILE);
+// Функция для получения имени файла по дате
+function getSlotsFileName(sport: 'tennis' | 'padel', date: string): string {
+  return `actual-${sport}-slots-${date}.json`;
+}
+
+function getSlotsLocalPath(sport: 'tennis' | 'padel', date: string): string {
+  return path.join(process.cwd(), getSlotsFileName(sport, date));
+}
 // Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage (требуется BUCKET_NAME)
 const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
 const storage = (USE_PROD_ACTUAL_SLOTS || BUCKET_NAME) ? new Storage() : null;
@@ -231,12 +235,12 @@ const searchStates = new Map<number, SearchState>();
 // === Функции для работы со слотами ===
 
 /**
- * Загружает слоты из Cloud Storage или локального файла
+ * Загружает слоты из Cloud Storage или локального файла для конкретной даты
  */
-async function loadSlots(sport: 'tennis' | 'padel' = 'tennis'): Promise<SlotsData | null> {
+async function loadSlots(sport: 'tennis' | 'padel', date: string): Promise<SlotsData | null> {
   try {
-    const fileName = sport === 'padel' ? PADEL_SLOTS_FILE : TENNIS_SLOTS_FILE;
-    const localPath = sport === 'padel' ? PADEL_LOCAL_SLOTS_PATH : TENNIS_LOCAL_SLOTS_PATH;
+    const fileName = getSlotsFileName(sport, date);
+    const localPath = getSlotsLocalPath(sport, date);
     
     // Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage
     if (USE_PROD_ACTUAL_SLOTS) {
@@ -283,7 +287,7 @@ async function loadSlots(sport: 'tennis' | 'padel' = 'tennis'): Promise<SlotsDat
       return JSON.parse(contents.toString());
     }
   } catch (error) {
-    console.error('Ошибка загрузки слотов:', error);
+    console.error(`Ошибка загрузки слотов для ${sport} на ${date}:`, error);
     return null;
   }
 }
@@ -376,21 +380,22 @@ function filterSlotsByTime(
 }
 
 /**
- * Получает все уникальные даты из данных слотов (начиная с сегодня)
+ * Получает список доступных дат (начиная с сегодня, на 14 дней вперед)
+ * Теперь даты генерируются, так как данные разбиты по файлам
  */
-function getAvailableDates(slotsData: SlotsData): string[] {
-  const datesSet = new Set<string>();
-  const today = new Date().toISOString().split('T')[0];
+function getAvailableDates(): string[] {
+  const dates: string[] = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
   
-  for (const dates of Object.values(slotsData.sites)) {
-    for (const date of Object.keys(dates)) {
-      if (date >= today) {
-        datesSet.add(date);
-      }
-    }
+  // Генерируем даты на 14 дней вперед
+  for (let i = 0; i < 14; i++) {
+    const date = new Date(today);
+    date.setDate(date.getDate() + i);
+    dates.push(formatDateToYYYYMMDD(date));
   }
   
-  return Array.from(datesSet).sort();
+  return dates;
 }
 
 /**
@@ -1062,8 +1067,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         return;
       }
       
-      // Загружаем слоты
-      const slotsData = await loadSlots(searchState.sport);
+      // Загружаем слоты для выбранной даты
+      const slotsData = await loadSlots(searchState.sport, searchState.date);
       if (!slotsData) {
         await getBot().sendMessage(chatId, USER_TEXTS.ERROR_LOAD_SLOTS);
         searchStates.delete(userId);
@@ -1681,21 +1686,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
       
     } else if (dateType === 'custom') {
-      const slotsData = await loadSlots(sport);
-      if (!slotsData) {
-        const messageId = query.message?.message_id;
-        if (messageId) {
-          await safeEditMessageText(USER_TEXTS.ERROR_LOAD_SLOTS, {
-            chat_id: chatId,
-            message_id: messageId
-          });
-        } else {
-          await getBot().sendMessage(chatId, USER_TEXTS.ERROR_LOAD_SLOTS);
-        }
-        return;
-      }
-      
-      const availableDates = getAvailableDates(slotsData);
+      // Генерируем список доступных дат (не нужно загружать слоты)
+      const availableDates = getAvailableDates();
       if (availableDates.length === 0) {
         const messageId = query.message?.message_id;
         if (messageId) {
