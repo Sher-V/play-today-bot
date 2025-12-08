@@ -19,6 +19,7 @@ import { fetchVivaCrmSlotsForSite } from './vivacrm-fetcher';
 import { fetchMoyKlassSlotsForSite } from './moyklass-fetcher';
 import { fetchFindSportSlotsForSite } from './findsport-fetcher';
 import { getDayTimestamp } from '../../utils/date-utils';
+import { SportType, type Sport } from '../../constants/sport-constants';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -86,7 +87,7 @@ interface AllSlotsResult {
  * Сохраняет данные в Cloud Storage или локальный файл по датам
  * Разбивает данные на файлы по датам: actual-{sport}-slots-YYYY-MM-DD.json
  */
-async function saveToStorage(data: AllSlotsResult, sport: 'tennis' | 'padel'): Promise<string[]> {
+async function saveToStorage(data: AllSlotsResult, sport: Sport): Promise<string[]> {
   // Собираем все уникальные даты из всех сайтов
   const datesSet = new Set<string>();
   for (const site of Object.values(data.sites)) {
@@ -524,30 +525,30 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
     // Поддерживает параметры: ?sport=tennis|padel&date=YYYY-MM-DD
     if (req.method === 'GET') {
       // Определяем тип спорта и дату из query параметров
-      let sport = 'tennis';
+      let sport: Sport = SportType.TENNIS;
       let date: string | null = null;
       
       if (req.url) {
         try {
           const url = new URL(req.url, 'http://localhost');
           const sportParam = url.searchParams.get('sport');
-          if (sportParam === 'padel' || sportParam === 'tennis') {
-            sport = sportParam;
+          if (sportParam === SportType.PADEL || sportParam === SportType.TENNIS) {
+            sport = sportParam as Sport;
           }
           date = url.searchParams.get('date');
         } catch (e) {
           // Если не удалось распарсить URL, пробуем из body
           const body = req.body as { sport?: string; date?: string } | undefined;
-          if (body?.sport === 'padel' || body?.sport === 'tennis') {
-            sport = body.sport;
+          if (body?.sport === SportType.PADEL || body?.sport === SportType.TENNIS) {
+            sport = body.sport as Sport;
           }
           date = body?.date || null;
         }
       } else {
         // Если нет URL, пробуем из body
         const body = req.body as { sport?: string; date?: string } | undefined;
-        if (body?.sport === 'padel' || body?.sport === 'tennis') {
-          sport = body.sport;
+        if (body?.sport === SportType.PADEL || body?.sport === SportType.TENNIS) {
+          sport = body.sport as Sport;
         }
         date = body?.date || null;
       }
@@ -582,8 +583,8 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
       
       // Сохраняем оба файла по датам
       const [tennisStoragePaths, padelStoragePaths] = await Promise.all([
-        saveToStorage(tennisData, 'tennis'),
-        saveToStorage(padelData, 'padel')
+        saveToStorage(tennisData, SportType.TENNIS),
+        saveToStorage(padelData, SportType.PADEL)
       ]);
       
       // Считаем статистику для тенниса

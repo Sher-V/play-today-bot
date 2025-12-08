@@ -24,6 +24,7 @@ import {
   PADEL_COURT_LOCATIONS
 } from './constants/padel-constants';
 import { USER_TEXTS } from './constants/user-texts';
+import { SportType, type Sport } from './constants/sport-constants';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -58,11 +59,11 @@ interface SlotsData {
 const BUCKET_NAME = process.env.GCS_BUCKET;
 const USE_PROD_ACTUAL_SLOTS = process.env.USE_PROD_ACTUAL_SLOTS === 'true';
 // Функция для получения имени файла по дате
-function getSlotsFileName(sport: 'tennis' | 'padel', date: string): string {
+function getSlotsFileName(sport: Sport, date: string): string {
   return `actual-${sport}-slots-${date}.json`;
 }
 
-function getSlotsLocalPath(sport: 'tennis' | 'padel', date: string): string {
+function getSlotsLocalPath(sport: Sport, date: string): string {
   return path.join(process.cwd(), getSlotsFileName(sport, date));
 }
 // Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage (требуется BUCKET_NAME)
@@ -221,7 +222,7 @@ const timeOptions = [
 interface SearchState {
   date: string;
   dateStr: string;
-  sport: 'tennis' | 'padel';
+  sport: Sport;
   selectedLocations: string[];
   selectedTimeSlots: string[];
   // Данные для пагинации
@@ -237,7 +238,7 @@ const searchStates = new Map<number, SearchState>();
 /**
  * Загружает слоты из Cloud Storage или локального файла для конкретной даты
  */
-async function loadSlots(sport: 'tennis' | 'padel', date: string): Promise<SlotsData | null> {
+async function loadSlots(sport: Sport, date: string): Promise<SlotsData | null> {
   try {
     const fileName = getSlotsFileName(sport, date);
     const localPath = getSlotsLocalPath(sport, date);
@@ -314,7 +315,7 @@ function getSlotsByDate(slotsData: SlotsData, targetDate: string): { siteName: s
 function filterSlotsByLocation(
   siteSlots: { siteName: string; slots: Slot[] }[],
   selectedLocations: string[],
-  sport: 'tennis' | 'padel'
+  sport: Sport
 ): { siteName: string; slots: Slot[] }[] {
   // Если выбрано "Не важно", возвращаем все слоты
   if (selectedLocations.includes('any')) {
@@ -322,7 +323,7 @@ function filterSlotsByLocation(
   }
   
   // Получаем маппинг локаций для текущего спорта
-  const COURT_LOCATIONS = sport === 'padel' ? PADEL_COURT_LOCATIONS : TENNIS_COURT_LOCATIONS;
+  const COURT_LOCATIONS = sport === SportType.PADEL ? PADEL_COURT_LOCATIONS : TENNIS_COURT_LOCATIONS;
   
   // Фильтруем слоты по локациям
   return siteSlots.filter(({ siteName }) => {
@@ -497,24 +498,24 @@ function formatLastUpdatedTime(lastUpdated: string): string {
 function formatSlotsPage(
   date: string,
   siteSlots: { siteName: string; slots: Slot[] }[],
-  sport: 'tennis' | 'padel' = 'tennis',
+  sport: Sport = SportType.TENNIS,
   page: number = 1,
   pageSize: number = 5,
   lastUpdated?: string,
   prefix?: string
 ): string {
   if (siteSlots.length === 0) {
-    const emoji = sport === 'padel' ? '🏓' : '🎾';
+    const emoji = sport === SportType.PADEL ? '🏓' : '🎾';
     return `${emoji} На ${date} свободных кортов не найдено.`;
   }
   
-  const emoji = sport === 'padel' ? '🏓' : '🎾';
-  const COURT_NAMES = sport === 'padel' ? PADEL_COURT_NAMES : TENNIS_COURT_NAMES;
-  const COURT_LINKS = sport === 'padel' ? PADEL_COURT_LINKS : TENNIS_COURT_LINKS;
-  const COURT_METRO = sport === 'padel' ? PADEL_COURT_METRO : TENNIS_COURT_METRO;
-  const COURT_MAPS = sport === 'padel' ? PADEL_COURT_MAPS : TENNIS_COURT_MAPS;
-  const COURT_DISTRICTS = sport === 'padel' ? PADEL_COURT_DISTRICTS : TENNIS_COURT_DISTRICTS;
-  const COURT_IS_CITY = sport === 'padel' ? PADEL_COURT_IS_CITY : TENNIS_COURT_IS_CITY;
+  const emoji = sport === SportType.PADEL ? '🏓' : '🎾';
+  const COURT_NAMES = sport === SportType.PADEL ? PADEL_COURT_NAMES : TENNIS_COURT_NAMES;
+  const COURT_LINKS = sport === SportType.PADEL ? PADEL_COURT_LINKS : TENNIS_COURT_LINKS;
+  const COURT_METRO = sport === SportType.PADEL ? PADEL_COURT_METRO : TENNIS_COURT_METRO;
+  const COURT_MAPS = sport === SportType.PADEL ? PADEL_COURT_MAPS : TENNIS_COURT_MAPS;
+  const COURT_DISTRICTS = sport === SportType.PADEL ? PADEL_COURT_DISTRICTS : TENNIS_COURT_DISTRICTS;
+  const COURT_IS_CITY = sport === SportType.PADEL ? PADEL_COURT_IS_CITY : TENNIS_COURT_IS_CITY;
   
   let message = '';
   if (prefix) {
@@ -749,7 +750,7 @@ function getTimeKeyboard(selectedTimeSlots: string[], availableOptions: typeof t
 function getPaginationKeyboard(
   currentPage: number,
   totalPages: number,
-  sport: 'tennis' | 'padel'
+  sport: Sport
 ): TelegramBot.InlineKeyboardButton[][] {
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
   
@@ -901,9 +902,9 @@ async function handleMessage(msg: TelegramBot.Message) {
       await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
-            [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
-            [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
+            [{ text: '📆 Сегодня', callback_data: `date_today_${SportType.TENNIS}` }],
+            [{ text: '📆 Завтра', callback_data: `date_tomorrow_${SportType.TENNIS}` }],
+            [{ text: '🗓 Указать дату', callback_data: `date_custom_${SportType.TENNIS}` }]
           ]
         }
       });
@@ -932,9 +933,9 @@ async function handleMessage(msg: TelegramBot.Message) {
       await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📆 Сегодня', callback_data: 'date_today_padel' }],
-            [{ text: '📆 Завтра', callback_data: 'date_tomorrow_padel' }],
-            [{ text: '🗓 Указать дату', callback_data: 'date_custom_padel' }]
+            [{ text: '📆 Сегодня', callback_data: `date_today_${SportType.PADEL}` }],
+            [{ text: '📆 Завтра', callback_data: `date_tomorrow_${SportType.PADEL}` }],
+            [{ text: '🗓 Указать дату', callback_data: `date_custom_${SportType.PADEL}` }]
           ]
         }
       });
@@ -1085,7 +1086,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const filteredSlots = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
       
       // Форматируем и отправляем сообщение
-      const emoji = searchState.sport === 'padel' ? '🏓' : '🎾';
+      const emoji = searchState.sport === SportType.PADEL ? '🏓' : '🎾';
       await safeEditMessageText(
         USER_TEXTS.SEARCHING_COURTS(searchState.dateStr, emoji),
         { chat_id: chatId, message_id: query.message?.message_id }
@@ -1389,28 +1390,28 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data === 'action_find_court') {
     const messageId = query.message?.message_id;
     if (messageId) {
-      await safeEditMessageText(USER_TEXTS.DATE_SELECTION, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
-            [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
-            [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
-          ]
-        }
-      });
-    } else {
-      // Fallback на sendMessage, если message_id недоступен
-      await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
-            [{ text: '📆 Завтра', callback_data: 'date_tomorrow_tennis' }],
-            [{ text: '🗓 Указать дату', callback_data: 'date_custom_tennis' }]
-          ]
-        }
-      });
+        await safeEditMessageText(USER_TEXTS.DATE_SELECTION, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📆 Сегодня', callback_data: `date_today_${SportType.TENNIS}` }],
+              [{ text: '📆 Завтра', callback_data: `date_tomorrow_${SportType.TENNIS}` }],
+              [{ text: '🗓 Указать дату', callback_data: `date_custom_${SportType.TENNIS}` }]
+            ]
+          }
+        });
+      } else {
+        // Fallback на sendMessage, если message_id недоступен
+        await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📆 Сегодня', callback_data: `date_today_${SportType.TENNIS}` }],
+              [{ text: '📆 Завтра', callback_data: `date_tomorrow_${SportType.TENNIS}` }],
+              [{ text: '🗓 Указать дату', callback_data: `date_custom_${SportType.TENNIS}` }]
+            ]
+          }
+        });
     }
     return;
   }
@@ -1422,7 +1423,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const rest = data.replace(prefix, '');
     const parts = rest.split('_');
     const currentPageOffset = parseInt(parts[0]) || 0;
-    const sport = parts[1] === 'padel' ? 'padel' : 'tennis';
+    const sport = parts[1] === SportType.PADEL ? SportType.PADEL : SportType.TENNIS;
+    
+    // Для падела навигация по неделям недоступна - только одна неделя
+    if (sport === SportType.PADEL) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Для падела доступна только одна неделя' });
+      return;
+    }
+    
     const newPageOffset = isPrev ? currentPageOffset - 1 : currentPageOffset + 1;
     
     const datesToShow = getDatesForWeekRange(newPageOffset);
@@ -1441,7 +1449,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       rows.push(dateButtons.slice(i, i + buttonsPerRow));
     }
     
-    // Добавляем кнопки навигации
+    // Добавляем кнопки навигации (только для тенниса)
     // На странице 0 (первая страница) показываем только кнопку "Следующая неделя"
     // На странице 1 (вторая страница) показываем только кнопку "Предыдущая неделя"
     if (newPageOffset === 0) {
@@ -1484,7 +1492,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data?.startsWith('date_pick_')) {
     const parts = data.replace('date_pick_', '').split('_');
     const dateKey = parts[0];
-    const sport = parts[1] === 'padel' ? 'padel' : 'tennis';
+    const sport = parts[1] === SportType.PADEL ? SportType.PADEL : SportType.TENNIS;
     const date = new Date(dateKey);
     const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
     
@@ -1538,7 +1546,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data?.startsWith('date_')) {
     const parts = data.replace('date_', '').split('_');
     const dateType = parts[0];
-    const sport = parts[1] === 'padel' ? 'padel' : 'tennis';
+    const sport = parts[1] === SportType.PADEL ? SportType.PADEL : SportType.TENNIS;
     
     if (dateType === 'today') {
       const today = new Date();
@@ -1720,14 +1728,18 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
       
       // Добавляем кнопки навигации
-      // На первой странице (pageOffset = 0) показываем только кнопку "Следующая неделя"
-      const nextWeekDates = getDatesForWeekRange(pageOffset + 1);
-      if (nextWeekDates.length > 0) {
-        rows.push([{
-          text: 'Следующая неделя ▶️',
-          callback_data: `week_next_${pageOffset}_${sport}`
-        }]);
+      // Для падела показываем только одну неделю (7 дней), для тенниса - две недели
+      if (sport === SportType.TENNIS) {
+        // На первой странице (pageOffset = 0) показываем только кнопку "Следующая неделя"
+        const nextWeekDates = getDatesForWeekRange(pageOffset + 1);
+        if (nextWeekDates.length > 0) {
+          rows.push([{
+            text: 'Следующая неделя ▶️',
+            callback_data: `week_next_${pageOffset}_${sport}`
+          }]);
+        }
       }
+      // Для падела не показываем кнопку навигации - только одна неделя
       
       // Редактируем сообщение с выбором даты
       const messageId = query.message?.message_id;
@@ -1845,7 +1857,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Обработка кнопки "Выбрать другую дату"
   if (data?.startsWith('select_another_date_')) {
-    const sport = data.replace('select_another_date_', '') === 'padel' ? 'padel' : 'tennis';
+    const sport = data.replace('select_another_date_', '') === SportType.PADEL ? SportType.PADEL : SportType.TENNIS;
     
     const messageId = query.message?.message_id;
     if (messageId) {
