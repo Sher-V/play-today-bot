@@ -134,7 +134,16 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     staffId: null  // Этот корт использует staff_id: null
   },
   {
-    name: TennisSiteId.TENNIS_CAPITAL,
+    name: TennisSiteId.TENNIS_CAPITAL_VOISKOVSKAYA,
+    locationId: 818035,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b876619.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    staffId: 2772203
+  },
+  {
+    name: TennisSiteId.TENNIS_CAPITAL_SAVELOVSKAYA,
     locationId: 818035,
     authToken: "gtcwf654agufy25gsadh",
     origin: "https://b876619.yclients.com",
@@ -142,12 +151,19 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     slotDuration: 60,
     staffIds: {
       2480431: "Корт 1",
-      2535545: "Корт 2",
-      3900730: "Корт 3",
-      3900734: "Корт 4",
-      2772203: "Корт 5",
-      3300652: "Корт 6",
-      3057405: "Корт 7"
+      2535545: "Корт 2"
+    }
+  },
+  {
+    name: TennisSiteId.TENNIS_CAPITAL_YUZHNAYA,
+    locationId: 818035,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b876619.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    staffIds: {
+      3300652: "Корт 1",
+      3057405: "Корт 2"
     }
   },
 ];
