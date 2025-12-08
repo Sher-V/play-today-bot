@@ -381,6 +381,47 @@ function filterSlotsByTime(
 }
 
 /**
+ * Сортирует слоты по приоритету:
+ * 1. Сначала корты с метро
+ * 2. В конце корты из moscow-region
+ */
+function sortSlotsByPriority(
+  siteSlots: { siteName: string; slots: Slot[] }[],
+  sport: Sport
+): { siteName: string; slots: Slot[] }[] {
+  const COURT_METRO = sport === SportType.PADEL ? PADEL_COURT_METRO : TENNIS_COURT_METRO;
+  const COURT_LOCATIONS = sport === SportType.PADEL ? PADEL_COURT_LOCATIONS : TENNIS_COURT_LOCATIONS;
+  
+  return [...siteSlots].sort((a, b) => {
+    const aHasMetro = !!COURT_METRO[a.siteName];
+    const bHasMetro = !!COURT_METRO[b.siteName];
+    const aIsMoscowRegion = (COURT_LOCATIONS[a.siteName] || []).includes('moscow-region');
+    const bIsMoscowRegion = (COURT_LOCATIONS[b.siteName] || []).includes('moscow-region');
+    
+    // Если у корта A есть метро, а у B нет - A идет первым
+    if (aHasMetro && !bHasMetro) {
+      return -1;
+    }
+    // Если у корта B есть метро, а у A нет - B идет первым
+    if (!aHasMetro && bHasMetro) {
+      return 1;
+    }
+    
+    // Если у обоих кортов одинаковое наличие метро, проверяем moscow-region
+    // Корты из moscow-region идут в конец
+    if (aIsMoscowRegion && !bIsMoscowRegion) {
+      return 1;
+    }
+    if (!aIsMoscowRegion && bIsMoscowRegion) {
+      return -1;
+    }
+    
+    // В остальных случаях сохраняем исходный порядок
+    return 0;
+  });
+}
+
+/**
  * Получает список доступных дат (начиная с сегодня, на 14 дней вперед)
  * Теперь даты генерируются, так как данные разбиты по файлам
  */
@@ -777,6 +818,16 @@ function getPaginationKeyboard(
   return buttons;
 }
 
+/**
+ * Создает клавиатуру с кнопками для случая, когда кортов не найдено на конкретное время
+ */
+function getNoCourtsFoundKeyboard(sport: Sport): TelegramBot.InlineKeyboardButton[][] {
+  return [
+    [{ text: '👇 Показать альтернативы', callback_data: `show_alternatives_${sport}` }],
+    [{ text: '🔍 Изменить параметры"', callback_data: `select_another_date_${sport}` }]
+  ];
+}
+
 // Обработка команды /start
 async function handleStart(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
@@ -1083,7 +1134,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const filteredByLocation = filterSlotsByLocation(siteSlots, searchState.selectedLocations, searchState.sport);
       
       // Фильтруем по времени
-      const filteredSlots = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
+      const filteredSlots = sortSlotsByPriority(
+        filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots),
+        searchState.sport
+      );
       
       // Форматируем и отправляем сообщение
       const emoji = searchState.sport === SportType.PADEL ? '🏓' : '🎾';
@@ -1102,51 +1156,40 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           // Пробуем показать все варианты без фильтров
           const allSlots = getSlotsByDate(slotsData, searchState.date);
           const allSlotsWithoutLocationFilter = filterSlotsByLocation(allSlots, ['any'], searchState.sport);
-          const allSlotsWithoutFilters = filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']);
+          const allSlotsWithoutFilters = sortSlotsByPriority(
+            filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']),
+            searchState.sport
+          );
           
           if (allSlotsWithoutFilters.length > 0) {
-            // Показываем альтернативные варианты
-            const prefix = USER_TEXTS.NO_COURTS_FOUND(searchState.dateStr);
+            // Сохраняем альтернативные варианты для последующего показа
             const pageSize = 5;
             const totalPages = Math.ceil(allSlotsWithoutFilters.length / pageSize);
             
-            // Сохраняем данные для пагинации
             searchState.siteSlots = allSlotsWithoutFilters;
             searchState.lastUpdated = slotsData.lastUpdated;
             searchState.currentPage = 1;
             searchState.totalPages = totalPages;
             searchStates.set(userId, searchState);
             
-            // Форматируем первую страницу с префиксом
-            const message = formatSlotsPage(
-              searchState.dateStr,
-              allSlotsWithoutFilters,
-              searchState.sport,
-              1,
-              pageSize,
-              slotsData.lastUpdated,
-              prefix
-            );
-            
+            // Показываем сообщение NO_COURTS_FOUND с кнопками
+            const message = USER_TEXTS.NO_COURTS_FOUND(searchState.dateStr);
             const messageId = query.message?.message_id;
             
-            // Отправляем сообщение с пагинацией
             if (messageId) {
               await safeEditMessageText(message, {
                 chat_id: chatId,
                 message_id: messageId,
                 parse_mode: 'Markdown',
-                disable_web_page_preview: true,
                 reply_markup: {
-                  inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                  inline_keyboard: getNoCourtsFoundKeyboard(searchState.sport)
                 }
               });
             } else {
               await getBot().sendMessage(chatId, message, {
                 parse_mode: 'Markdown',
-                disable_web_page_preview: true,
                 reply_markup: {
-                  inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                  inline_keyboard: getNoCourtsFoundKeyboard(searchState.sport)
                 }
               });
             }
@@ -1851,6 +1894,57 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         }
       });
     }
+    
+    return;
+  }
+
+  // Обработка кнопки "Показать альтернативы"
+  if (data?.startsWith('show_alternatives_')) {
+    const searchState = searchStates.get(userId);
+    if (!searchState || !searchState.siteSlots || searchState.siteSlots.length === 0) {
+      await getBot().sendMessage(chatId, USER_TEXTS.ERROR_SESSION_EXPIRED);
+      return;
+    }
+    
+    const pageSize = 5;
+    const totalPages = searchState.totalPages || 1;
+    const currentPage = 1;
+    
+    // Форматируем первую страницу альтернатив
+    const message = formatSlotsPage(
+      searchState.dateStr,
+      searchState.siteSlots,
+      searchState.sport,
+      currentPage,
+      pageSize,
+      searchState.lastUpdated
+    );
+    
+    const messageId = query.message?.message_id;
+    
+    if (messageId) {
+      await safeEditMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: {
+          inline_keyboard: getPaginationKeyboard(currentPage, totalPages, searchState.sport)
+        }
+      });
+    } else {
+      await getBot().sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: {
+          inline_keyboard: getPaginationKeyboard(currentPage, totalPages, searchState.sport)
+        }
+      });
+    }
+    
+    // Обновляем текущую страницу в состоянии
+    searchState.currentPage = currentPage;
+    searchStates.set(userId, searchState);
     
     return;
   }
