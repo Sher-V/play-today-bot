@@ -382,7 +382,53 @@ function getAvailableDates(slotsData: SlotsData): string[] {
 }
 
 /**
- * Форматирует дату для отображения на кнопке (например, "5 дек")
+ * Форматирует дату в формат YYYY-MM-DD в локальном времени
+ */
+function formatDateToYYYYMMDD(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Количество дней на странице
+const DAYS_PER_PAGE = 7;
+
+/**
+ * Получает даты для страницы с учетом смещения страницы
+ * @param pageOffset - смещение страницы (0 = первые дни начиная с сегодня, 1 = следующие дни)
+ * @returns массив дат для отображения (ровно DAYS_PER_PAGE дней)
+ */
+function getDatesForWeekRange(pageOffset: number = 0): string[] {
+  // Используем московское время для определения "сегодня"
+  const moscowToday = getMoscowTime();
+  moscowToday.setHours(0, 0, 0, 0);
+  
+  // Для первой страницы начинаем строго с сегодняшнего дня
+  // Для последующих страниц начинаем с сегодня + смещение * DAYS_PER_PAGE дней
+  const startDate = new Date(moscowToday);
+  if (pageOffset > 0) {
+    startDate.setDate(startDate.getDate() + (pageOffset * DAYS_PER_PAGE));
+  }
+  
+  // Генерируем все даты в диапазоне
+  const allDatesInRange: string[] = [];
+  const currentDate = new Date(startDate);
+  
+  for (let i = 0; i < DAYS_PER_PAGE; i++) {
+    // Используем локальное время вместо UTC
+    const dateStr = formatDateToYYYYMMDD(currentDate);
+    
+    // Добавляем все даты без фильтрации по наличию слотов
+    allDatesInRange.push(dateStr);
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  return allDatesInRange;
+}
+
+/**
+ * Форматирует дату для отображения на кнопке (например, "5 дек" или "5 дек, пн")
  */
 function formatDateButton(dateKey: string): string {
   const date = new Date(dateKey);
@@ -403,7 +449,9 @@ function formatDateButton(dateKey: string): string {
   
   const day = date.getDate();
   const months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-  return `${day} ${months[date.getMonth()]}`;
+  const weekDays = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const weekDay = weekDays[date.getDay()];
+  return `${day} ${months[date.getMonth()]}, ${weekDay}`;
 }
 
 /**
@@ -1328,6 +1376,71 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Обработка навигации по неделям
+  if (data?.startsWith('week_prev_') || data?.startsWith('week_next_')) {
+    const isPrev = data.startsWith('week_prev_');
+    const prefix = isPrev ? 'week_prev_' : 'week_next_';
+    const rest = data.replace(prefix, '');
+    const parts = rest.split('_');
+    const currentPageOffset = parseInt(parts[0]) || 0;
+    const sport = parts[1] === 'padel' ? 'padel' : 'tennis';
+    const newPageOffset = isPrev ? currentPageOffset - 1 : currentPageOffset + 1;
+    
+    const datesToShow = getDatesForWeekRange(newPageOffset);
+    
+    // Добавляем sport к callback_data для каждой даты
+    const dateButtons = datesToShow.map(date => ({
+      text: formatDateButton(date),
+      callback_data: `date_pick_${date}_${sport}`
+    }));
+    
+    // Распределяем кнопки по рядам (по 3 кнопки в ряд)
+    const rows: TelegramBot.InlineKeyboardButton[][] = [];
+    const buttonsPerRow = 3;
+    
+    for (let i = 0; i < dateButtons.length; i += buttonsPerRow) {
+      rows.push(dateButtons.slice(i, i + buttonsPerRow));
+    }
+    
+    // Добавляем кнопки навигации
+    // На странице 0 (первая страница) показываем только кнопку "Следующая неделя"
+    // На странице 1 (вторая страница) показываем только кнопку "Предыдущая неделя"
+    if (newPageOffset === 0) {
+      // Первая страница - только кнопка "Следующая неделя"
+      rows.push([{
+        text: 'Следующая неделя ▶️',
+        callback_data: `week_next_${newPageOffset}_${sport}`
+      }]);
+    } else if (newPageOffset === 1) {
+      // Вторая страница - только кнопка "Предыдущая неделя"
+      rows.push([{
+        text: '◀️ Предыдущая неделя',
+        callback_data: `week_prev_${newPageOffset}_${sport}`
+      }]);
+    }
+    
+    // Редактируем сообщение с выбором даты
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      try {
+        await safeEditMessageText('📅 Выбери дату:', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: rows
+          }
+        });
+        await safeAnswerCallbackQuery(query.id);
+      } catch (error) {
+        console.error('Error editing message:', error);
+        await safeAnswerCallbackQuery(query.id, { text: 'Ошибка при обновлении сообщения.' });
+      }
+    } else {
+      await safeAnswerCallbackQuery(query.id, { text: 'Ошибка: не найден message_id.' });
+    }
+    return;
+  }
+
   // Обработка выбора конкретной даты из date picker
   if (data?.startsWith('date_pick_')) {
     const parts = data.replace('date_pick_', '').split('_');
@@ -1562,8 +1675,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         return;
       }
       
+      // Показываем первые 7 дней (pageOffset = 0)
+      const pageOffset = 0;
+      const datesToShow = getDatesForWeekRange(pageOffset);
+      
       // Добавляем sport к callback_data для каждой даты
-      const dateButtons = availableDates.map(date => ({
+      const dateButtons = datesToShow.map(date => ({
         text: formatDateButton(date),
         callback_data: `date_pick_${date}_${sport}`
       }));
@@ -1574,6 +1691,16 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       for (let i = 0; i < dateButtons.length; i += buttonsPerRow) {
         rows.push(dateButtons.slice(i, i + buttonsPerRow));
+      }
+      
+      // Добавляем кнопки навигации
+      // На первой странице (pageOffset = 0) показываем только кнопку "Следующая неделя"
+      const nextWeekDates = getDatesForWeekRange(pageOffset + 1);
+      if (nextWeekDates.length > 0) {
+        rows.push([{
+          text: 'Следующая неделя ▶️',
+          callback_data: `week_next_${pageOffset}_${sport}`
+        }]);
       }
       
       // Редактируем сообщение с выбором даты
