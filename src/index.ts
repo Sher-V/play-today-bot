@@ -23,6 +23,7 @@ import {
   PADEL_COURT_IS_CITY,
   PADEL_COURT_LOCATIONS
 } from './constants/padel-constants';
+import { USER_TEXTS } from './constants/user-texts';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -182,16 +183,27 @@ const districtOptions = [
   { id: 'any', label: 'Не важно, могу ездить' }
 ];
 
-// Опции локаций для поиска кортов
-const locationOptions = [
-  { id: 'center', label: 'Центр' },
-  { id: 'west', label: 'Запад' },
-  { id: 'north', label: 'Север' },
-  { id: 'south', label: 'Юг' },
-  { id: 'east', label: 'Восток' },
-  { id: 'moscow-region', label: 'Подмосковье' },
-  { id: 'any', label: 'Не важно' }
-];
+// ID локаций для поиска кортов
+const LocationId = {
+  CENTER: 'center',
+  WEST: 'west',
+  NORTH: 'north',
+  SOUTH: 'south',
+  EAST: 'east',
+  MOSCOW_REGION: 'moscow-region',
+  ANY: 'any'
+} as const;
+
+// Лейблы локаций
+const locationLabels = new Map<string, string>([
+  [LocationId.CENTER, 'Центр'],
+  [LocationId.WEST, 'Запад'],
+  [LocationId.NORTH, 'Север'],
+  [LocationId.SOUTH, 'Юг'],
+  [LocationId.EAST, 'Восток'],
+  [LocationId.MOSCOW_REGION, 'Подмосковье'],
+  [LocationId.ANY, 'Не важно']
+]);
 
 // Опции времени для поиска кортов
 const timeOptions = [
@@ -620,11 +632,49 @@ function getDistrictKeyboard(selectedDistricts: string[]): TelegramBot.InlineKey
 
 // Генерация клавиатуры для выбора локаций
 function getLocationKeyboard(selectedLocations: string[]): TelegramBot.InlineKeyboardButton[][] {
+  // Вспомогательная функция для получения текста кнопки
+  const getButtonText = (id: string) => {
+    const label = locationLabels.get(id) || id;
+    return selectedLocations.includes(id) ? `✅ ${label}` : label;
+  };
+  
   return [
-    ...locationOptions.map(opt => [{
-      text: selectedLocations.includes(opt.id) ? `✅ ${opt.label}` : opt.label,
-      callback_data: `location_${opt.id}`
-    }]),
+    // Север - отдельная строка
+    [{
+      text: getButtonText(LocationId.NORTH),
+      callback_data: `location_${LocationId.NORTH}`
+    }],
+    // Запад, Центр, Восток - в одной строке
+    [
+      {
+        text: getButtonText(LocationId.WEST),
+        callback_data: `location_${LocationId.WEST}`
+      },
+      {
+        text: getButtonText(LocationId.CENTER),
+        callback_data: `location_${LocationId.CENTER}`
+      },
+      {
+        text: getButtonText(LocationId.EAST),
+        callback_data: `location_${LocationId.EAST}`
+      }
+    ],
+    // Юг - отдельная строка
+    [{
+      text: getButtonText(LocationId.SOUTH),
+      callback_data: `location_${LocationId.SOUTH}`
+    }],
+    // Подмосковье - отдельная строка
+    [{
+      text: getButtonText(LocationId.MOSCOW_REGION),
+      callback_data: `location_${LocationId.MOSCOW_REGION}`
+    }],
+    // Не важно - отдельная строка
+    [{
+      text: getButtonText(LocationId.ANY),
+      callback_data: `location_${LocationId.ANY}`
+    }],
+    // Готово - отдельная строка
     [{ text: '✔️ Готово', callback_data: 'location_done' }]
   ];
 }
@@ -726,11 +776,7 @@ async function handleStart(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
   const userName = msg.from?.first_name || 'друг';
   
-  await getBot().sendMessage(chatId, `Рад тебя видеть, ${userName}!
-
-Ты в Play Today — сервисе, который делает поиск кортов для тенниса и падела лёгким и комфортным.
-
-Выбери время, а я покажу, где можно сыграть. 🎾✨`, {
+  await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
     reply_markup: {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }],
@@ -746,12 +792,7 @@ async function handleStart(msg: TelegramBot.Message) {
 async function handleHelp(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
   
-  await getBot().sendMessage(chatId, 
-    `📖 *Доступные команды:*\n\n` +
-    `/start - Начать работу с ботом\n` +
-    `/help - Показать это сообщение\n`,
-    { parse_mode: 'Markdown' }
-  );
+  await getBot().sendMessage(chatId, USER_TEXTS.HELP, { parse_mode: 'Markdown' });
 }
 
 // Обработка текстовых сообщений
@@ -810,20 +851,14 @@ async function handleMessage(msg: TelegramBot.Message) {
   if (text?.startsWith('/')) return;
 
   // Проверяем, это ответ на вопрос "Как к тебе обращаться?"
-  if (msg.reply_to_message?.text === '👤 Как к тебе обращаться?' && userId && text) {
+  if (msg.reply_to_message?.text === USER_TEXTS.ASK_NAME && userId && text) {
     // Сохраняем имя пользователя
     const profile = users.get(userId) || {};
     profile.name = text;
     users.set(userId, profile);
 
     // Задаём вопрос об уровне игры
-    await getBot().sendMessage(chatId, `Приятно познакомиться, ${text}! 
-      \nВот как я понимаю уровни игры:
-🎾 Новичок — беру ракетку редко, почти не играл(а)
-🙂 Играл(а) немного — могу перекинуть мяч, иногда играю
-🔥 Уверенный любитель — подача, розыгрыши, играю ≈1 раз в неделю
-🏆 Сильный любитель — регулярные тренировки / турниры
-\nВыбери свой уровень игры:`, {
+    await getBot().sendMessage(chatId, USER_TEXTS.LEVELS_EXPLANATION(text), {
       reply_markup: {
         inline_keyboard: [
           [{ text: '🎾 Новичок', callback_data: 'level_beginner' }],
@@ -858,7 +893,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
+      await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
         reply_markup: {
           inline_keyboard: [
             [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
@@ -889,7 +924,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
+      await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
         reply_markup: {
           inline_keyboard: [
             [{ text: '📆 Сегодня', callback_data: 'date_today_padel' }],
@@ -920,7 +955,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      await getBot().sendMessage(chatId, '💬 Оставьте обратную связь: https://t.me/play_today_chat');
+      await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
       break;
     // case '👤 Профиль':
     //   await getBot().sendMessage(chatId, '👤 Как к тебе обращаться?', {
@@ -999,10 +1034,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const levelText = levels[data] || data;
     
     // Сообщение об уровне
-    await getBot().sendMessage(chatId, `Отлично! Твой уровень: ${levelText}`);
+    await getBot().sendMessage(chatId, USER_TEXTS.LEVEL_SELECTED(levelText));
     
     // Переходим к выбору районов
-    await getBot().sendMessage(chatId, `📍 В каких частях Москвы тебе удобно играть?\n\nМожно выбрать несколько вариантов:`, {
+    await getBot().sendMessage(chatId, USER_TEXTS.DISTRICT_SELECTION, {
       reply_markup: {
         inline_keyboard: getDistrictKeyboard([])
       }
@@ -1014,7 +1049,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data?.startsWith('location_')) {
     const searchState = searchStates.get(userId);
     if (!searchState) {
-      await getBot().sendMessage(chatId, '❌ Сессия поиска истекла. Начни поиск заново.');
+      await getBot().sendMessage(chatId, USER_TEXTS.ERROR_SESSION_EXPIRED);
       return;
     }
     
@@ -1023,14 +1058,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Кнопка "Готово"
     if (locationId === 'done') {
       if (searchState.selectedLocations.length === 0) {
-        await safeAnswerCallbackQuery(query.id, { text: 'Выбери хотя бы одну локацию или "Не важно"!' });
+        await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.VALIDATION_LOCATION_REQUIRED });
         return;
       }
       
       // Загружаем слоты
       const slotsData = await loadSlots(searchState.sport);
       if (!slotsData) {
-        await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
+        await getBot().sendMessage(chatId, USER_TEXTS.ERROR_LOAD_SLOTS);
         searchStates.delete(userId);
         return;
       }
@@ -1047,7 +1082,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       // Форматируем и отправляем сообщение
       const emoji = searchState.sport === 'padel' ? '🏓' : '🎾';
       await safeEditMessageText(
-        `${emoji} Ищем корты на ${searchState.dateStr}...`,
+        USER_TEXTS.SEARCHING_COURTS(searchState.dateStr, emoji),
         { chat_id: chatId, message_id: query.message?.message_id }
       );
       
@@ -1065,7 +1100,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           
           if (allSlotsWithoutFilters.length > 0) {
             // Показываем альтернативные варианты
-            const prefix = `К сожалению, по заданным параметрам подходящих кортов не нашлось.\n\nНо ниже написал несколько альтернатив на ${searchState.dateStr} — возможно, они окажутся удобными. 🎾✨`;
+            const prefix = USER_TEXTS.NO_COURTS_FOUND(searchState.dateStr);
             const pageSize = 5;
             const totalPages = Math.ceil(allSlotsWithoutFilters.length / pageSize);
             
@@ -1111,7 +1146,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             }
           } else {
             // Даже без фильтров ничего нет
-            const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
+            const errorMessage = USER_TEXTS.NO_COURTS_ANY_DATE;
             const messageId = query.message?.message_id;
             if (messageId) {
               await safeEditMessageText(errorMessage, {
@@ -1125,7 +1160,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           }
         } else {
           // Фильтры были "any", но ничего не найдено
-          const errorMessage = `К сожалению на данную дату нет доступных кортов, попробуйте выбрать другую дату или попробовать позднее`;
+          const errorMessage = USER_TEXTS.NO_COURTS_ANY_DATE;
           const messageId = query.message?.message_id;
           if (messageId) {
             await safeEditMessageText(errorMessage, {
@@ -1221,7 +1256,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data?.startsWith('time_')) {
     const searchState = searchStates.get(userId);
     if (!searchState) {
-      await getBot().sendMessage(chatId, '❌ Сессия поиска истекла. Начни поиск заново.');
+      await getBot().sendMessage(chatId, USER_TEXTS.ERROR_SESSION_EXPIRED);
       return;
     }
     
@@ -1230,12 +1265,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Кнопка "Готово"
     if (timeId === 'done') {
       if (searchState.selectedTimeSlots.length === 0) {
-        await safeAnswerCallbackQuery(query.id, { text: 'Выбери хотя бы одно время или "Не важно"!' });
+        await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.VALIDATION_TIME_REQUIRED });
         return;
       }
       
       // Показываем выбор локации
-      await safeEditMessageText('📍 В какой локации ищем корт?', {
+      await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
         chat_id: chatId,
         message_id: query.message?.message_id,
         reply_markup: {
@@ -1288,7 +1323,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Кнопка "Готово"
     if (districtId === 'done') {
       if (selected.length === 0) {
-        await safeAnswerCallbackQuery(query.id, { text: 'Выбери хотя бы один район!' });
+        await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.VALIDATION_DISTRICT_REQUIRED });
         return;
       }
 
@@ -1298,13 +1333,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
       // Первое сообщение - редактируем текущее
       await safeEditMessageText(
-        `📍 Районы: ${selectedLabels.join(', ')}`,
+        USER_TEXTS.DISTRICT_SELECTED(selectedLabels.join(', ')),
         { chat_id: chatId, message_id: query.message?.message_id }
       );
 
       // Второе сообщение с кнопками
-      await getBot().sendMessage(chatId, 
-        `Готово, профиль сохранён ✅\n\nТеперь я могу:\n• подсказывать корты поблизости\n\nЧто сделаем сейчас? 👇`, 
+      await getBot().sendMessage(chatId, USER_TEXTS.PROFILE_SAVED,
         {
           reply_markup: {
             inline_keyboard: [
@@ -1350,7 +1384,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data === 'action_find_court') {
     const messageId = query.message?.message_id;
     if (messageId) {
-      await safeEditMessageText('📅 На какую дату ищем корт?', {
+      await safeEditMessageText(USER_TEXTS.DATE_SELECTION, {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
@@ -1363,7 +1397,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       });
     } else {
       // Fallback на sendMessage, если message_id недоступен
-      await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
+      await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
         reply_markup: {
           inline_keyboard: [
             [{ text: '📆 Сегодня', callback_data: 'date_today_tennis' }],
@@ -1422,8 +1456,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Редактируем сообщение с выбором даты
     const messageId = query.message?.message_id;
     if (messageId) {
-      try {
-        await safeEditMessageText('📅 Выбери дату:', {
+        try {
+        await safeEditMessageText(USER_TEXTS.DATE_PICKER, {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: {
@@ -1433,10 +1467,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         await safeAnswerCallbackQuery(query.id);
       } catch (error) {
         console.error('Error editing message:', error);
-        await safeAnswerCallbackQuery(query.id, { text: 'Ошибка при обновлении сообщения.' });
+        await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_UPDATE_MESSAGE });
       }
     } else {
-      await safeAnswerCallbackQuery(query.id, { text: 'Ошибка: не найден message_id.' });
+      await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_NO_MESSAGE_ID });
     }
     return;
   }
@@ -1479,14 +1513,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         searchStates.set(userId, searchState);
       }
       
-      await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
+      await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
         reply_markup: {
           inline_keyboard: getLocationKeyboard([])
         }
       });
     } else {
       // Показываем выбор времени
-      await getBot().sendMessage(chatId, '⏰ В какое время ищем корт?', {
+      await getBot().sendMessage(chatId, USER_TEXTS.TIME_SELECTION, {
         reply_markup: {
           inline_keyboard: getTimeKeyboard([], availableTimeOptions)
         }
@@ -1535,7 +1569,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         
         const messageId = query.message?.message_id;
         if (messageId) {
-          await safeEditMessageText('📍 В какой локации ищем корт?', {
+          await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1543,7 +1577,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             }
           });
         } else {
-          await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
+          await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
             reply_markup: {
               inline_keyboard: getLocationKeyboard([])
             }
@@ -1556,7 +1590,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         // Редактируем сообщение с выбором времени
         const messageId = query.message?.message_id;
         if (messageId) {
-          await safeEditMessageText('⏰ В какое время ищем корт?', {
+          await safeEditMessageText(USER_TEXTS.TIME_SELECTION, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1565,7 +1599,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           });
         } else {
           // Fallback на sendMessage, если message_id недоступен
-          await getBot().sendMessage(chatId, '⏰ В какое время ищем корт?', {
+          await getBot().sendMessage(chatId, USER_TEXTS.TIME_SELECTION, {
             reply_markup: {
               inline_keyboard: getTimeKeyboard([], availableTimeOptions)
             }
@@ -1608,7 +1642,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         
         const messageId = query.message?.message_id;
         if (messageId) {
-          await safeEditMessageText('📍 В какой локации ищем корт?', {
+          await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1616,7 +1650,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             }
           });
         } else {
-          await getBot().sendMessage(chatId, '📍 В какой локации ищем корт?', {
+          await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
             reply_markup: {
               inline_keyboard: getLocationKeyboard([])
             }
@@ -1629,7 +1663,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         // Редактируем сообщение с выбором времени
         const messageId = query.message?.message_id;
         if (messageId) {
-          await safeEditMessageText('⏰ В какое время ищем корт?', {
+          await safeEditMessageText(USER_TEXTS.TIME_SELECTION, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1638,7 +1672,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           });
         } else {
           // Fallback на sendMessage, если message_id недоступен
-          await getBot().sendMessage(chatId, '⏰ В какое время ищем корт?', {
+          await getBot().sendMessage(chatId, USER_TEXTS.TIME_SELECTION, {
             reply_markup: {
               inline_keyboard: getTimeKeyboard([], availableTimeOptions)
             }
@@ -1651,12 +1685,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       if (!slotsData) {
         const messageId = query.message?.message_id;
         if (messageId) {
-          await safeEditMessageText('❌ Не удалось загрузить данные о кортах. Попробуй позже.', {
+          await safeEditMessageText(USER_TEXTS.ERROR_LOAD_SLOTS, {
             chat_id: chatId,
             message_id: messageId
           });
         } else {
-          await getBot().sendMessage(chatId, '❌ Не удалось загрузить данные о кортах. Попробуй позже.');
+          await getBot().sendMessage(chatId, USER_TEXTS.ERROR_LOAD_SLOTS);
         }
         return;
       }
@@ -1665,12 +1699,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       if (availableDates.length === 0) {
         const messageId = query.message?.message_id;
         if (messageId) {
-          await safeEditMessageText('😔 Нет доступных дат для бронирования.', {
+          await safeEditMessageText(USER_TEXTS.ERROR_NO_DATES, {
             chat_id: chatId,
             message_id: messageId
           });
         } else {
-          await getBot().sendMessage(chatId, '😔 Нет доступных дат для бронирования.');
+          await getBot().sendMessage(chatId, USER_TEXTS.ERROR_NO_DATES);
         }
         return;
       }
@@ -1707,7 +1741,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const messageId = query.message?.message_id;
       if (messageId) {
         try {
-          await safeEditMessageText('📅 Выбери дату:', {
+        await safeEditMessageText(USER_TEXTS.DATE_PICKER, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: {
@@ -1717,7 +1751,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         } catch (error) {
           // Если не удалось отредактировать сообщение, отправляем новое
           console.error('Error editing message, sending new one:', error);
-          await getBot().sendMessage(chatId, '📅 Выбери дату:', {
+          await getBot().sendMessage(chatId, USER_TEXTS.DATE_PICKER, {
             reply_markup: {
               inline_keyboard: rows
             }
@@ -1739,7 +1773,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data?.startsWith('page_')) {
     const searchState = searchStates.get(userId);
     if (!searchState || !searchState.siteSlots) {
-      await getBot().sendMessage(chatId, '❌ Сессия поиска истекла. Начни поиск заново.');
+      await getBot().sendMessage(chatId, USER_TEXTS.ERROR_SESSION_EXPIRED);
       return;
     }
     
@@ -1823,7 +1857,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     const messageId = query.message?.message_id;
     if (messageId) {
-      await safeEditMessageText('📅 На какую дату ищем корт?', {
+      await safeEditMessageText(USER_TEXTS.DATE_SELECTION, {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
@@ -1836,7 +1870,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       });
     } else {
       // Fallback на sendMessage, если message_id недоступен
-      await getBot().sendMessage(chatId, '📅 На какую дату ищем корт?', {
+      await getBot().sendMessage(chatId, USER_TEXTS.DATE_SELECTION, {
         reply_markup: {
           inline_keyboard: [
             [{ text: '📆 Сегодня', callback_data: `date_today_${sport}` }],
@@ -1854,11 +1888,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const profile = users.get(userId);
     const userName = profile?.name || query.from.first_name;
     
-    await getBot().sendMessage(chatId, `Рад тебя видеть, ${userName}!
-
-Ты в Play Today — сервисе, который делает поиск кортов для тенниса и падела лёгким и комфортным.
-
-Выбери время, а я покажу, где можно сыграть. 🎾✨`, {
+    await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
       reply_markup: {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }],
