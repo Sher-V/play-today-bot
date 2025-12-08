@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import {
   SiteConfig,
   SITE_CONFIGS,
+  SITE_PADEL_CONFIGS,
   YCLIENTS_CONFIGS,
   YCLIENTS_PADEL_CONFIGS,
   VIVACRM_CONFIGS,
@@ -430,6 +431,18 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
     lastUpdated: new Date().toISOString(),
     sites: {}
   };
+  
+  // Reservi.ru (1C) для падела
+  for (const config of SITE_PADEL_CONFIGS) {
+    try {
+      console.log(`Fetching slots for: ${config.name} (reservi.ru)`);
+      result.sites[config.name] = await fetchSlotsForSite(config);
+      console.log(`✅ Successfully fetched ${config.name}`);
+    } catch (error) {
+      console.error(`Error fetching ${config.name}:`, error);
+      result.sites[config.name] = {};
+    }
+  }
   
   // YClients (падел)
   for (const config of YCLIENTS_PADEL_CONFIGS) {

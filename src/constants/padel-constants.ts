@@ -9,7 +9,9 @@ export enum PadelSiteId {
   UP2_PADEL = "up2-padel",
   BANDEHAARENACLUB = "bandehaarenaclub",
   ORBITA_TENNIS = "orbita-tennis",
-  V_PADEL = "v-padel"
+  V_PADEL = "v-padel",
+  KORTY_SETKI = "korty-setki",
+  PADEL_VIDNOE = "padel-vidnoe"
 }
 
 // Названия площадок для отображения (падел)
@@ -23,7 +25,9 @@ export const PADEL_COURT_NAMES: Record<string, string> = {
   [PadelSiteId.UP2_PADEL]: "Up2 Padel",
   [PadelSiteId.BANDEHAARENACLUB]: "Bandeha Padel Arena",
   [PadelSiteId.ORBITA_TENNIS]: "Орбита Падел",
-  [PadelSiteId.V_PADEL]: "V Padel"
+  [PadelSiteId.V_PADEL]: "V Padel",
+  [PadelSiteId.KORTY_SETKI]: "Корты-Сетки",
+  [PadelSiteId.PADEL_VIDNOE]: "Падел Видное"
 };
 
 // Ссылки на бронирование кортов (падел)
@@ -37,7 +41,9 @@ export const PADEL_COURT_LINKS: Record<string, string> = {
   [PadelSiteId.UP2_PADEL]: "https://juzhnyj-1745398028.clients.site/?yclid=16571022320512532479&utm_content=17369921911&utm_source=geoadv_maps",
   [PadelSiteId.BANDEHAARENACLUB]: "https://bandehaarenaclub.ru/",
   [PadelSiteId.ORBITA_TENNIS]: "https://orbitatennis.ru/",
-  [PadelSiteId.V_PADEL]: "https://v-padel.ru/"
+  [PadelSiteId.V_PADEL]: "https://v-padel.ru/",
+  [PadelSiteId.KORTY_SETKI]: "https://korty-setki.ru/",
+  [PadelSiteId.PADEL_VIDNOE]: "https://padelvidnoe.ru/"
 };
 
 // Ссылки на карты кортов (падел)
@@ -51,7 +57,9 @@ export const PADEL_COURT_MAPS: Record<string, string> = {
   [PadelSiteId.UP2_PADEL]: "https://yandex.ru/maps/org/up2_padel/166138496300/?indoorLevel=1&ll=37.611742%2C55.621719&z=16.96",
   [PadelSiteId.BANDEHAARENACLUB]: "https://yandex.ru/maps/org/bandeha_padel_arena/216192396141/?ll=37.389086%2C55.826837&z=16.96",
   [PadelSiteId.ORBITA_TENNIS]: "https://yandex.ru/maps/org/orbita_padel/113012593244/?ll=37.395581%2C55.649413&z=13.19",
-  [PadelSiteId.V_PADEL]: "https://yandex.ru/maps/org/v_padel/54876592176/?indoorLevel=5&ll=37.407196%2C55.884969&z=16.96"
+  [PadelSiteId.V_PADEL]: "https://yandex.ru/maps/org/v_padel/54876592176/?indoorLevel=5&ll=37.407196%2C55.884969&z=16.96",
+  [PadelSiteId.KORTY_SETKI]: "https://yandex.ru/maps/org/korty_setki/75670705497/?ll=37.823352%2C55.686999&z=16.96",
+  [PadelSiteId.PADEL_VIDNOE]: "https://yandex.ru/maps/-/CLg~UT6~"
 };
 
 // Маппинг метро/города для кортов (падел)
@@ -65,7 +73,9 @@ export const PADEL_COURT_METRO: Record<string, string> = {
   [PadelSiteId.BANDEHAARENACLUB]: "Мякинино",
   [PadelSiteId.ORBITA_TENNIS]: "Юго-Западная",
   [PadelSiteId.V_PADEL]: "Петровско-Разумовская",
-  [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи"
+  [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи",
+  [PadelSiteId.KORTY_SETKI]: "Алексеевская",
+  [PadelSiteId.PADEL_VIDNOE]: "Видное"
 };
 
 // Маппинг округов/районов для кортов (падел)
@@ -79,12 +89,15 @@ export const PADEL_COURT_DISTRICTS: Record<string, string> = {
   [PadelSiteId.BANDEHAARENACLUB]: "СЗАО",
   [PadelSiteId.ORBITA_TENNIS]: "ЗАО",
   [PadelSiteId.V_PADEL]: "САО",
-  [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи"
+  [PadelSiteId.ROCKET_PADEL_CLUB]: "Мытищи",
+  [PadelSiteId.KORTY_SETKI]: "СВАО",
+  [PadelSiteId.PADEL_VIDNOE]: "Видное"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
 export const PADEL_COURT_IS_CITY: Record<string, boolean> = {
-  [PadelSiteId.ROCKET_PADEL_CLUB]: true
+  [PadelSiteId.ROCKET_PADEL_CLUB]: true,
+  [PadelSiteId.PADEL_VIDNOE]: true
 };
 
 // Маппинг кортов к локациям (падел)
@@ -98,6 +111,8 @@ export const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
   [PadelSiteId.UP2_PADEL]: ["south"],
   [PadelSiteId.BANDEHAARENACLUB]: ["west"],
   [PadelSiteId.ORBITA_TENNIS]: ["west"],
-  [PadelSiteId.V_PADEL]: ["north"]
+  [PadelSiteId.V_PADEL]: ["north"],
+  [PadelSiteId.KORTY_SETKI]: ["north"],
+  [PadelSiteId.PADEL_VIDNOE]: ["moscow-region"]
 };
 

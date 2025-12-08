@@ -266,6 +266,26 @@ export const YCLIENTS_PADEL_CONFIGS: YClientsConfig[] = [
 
 export const YCLIENTS_API_URL = 'https://platform.yclients.com/api/v1/b2c/booking/availability/search-timeslots';
 
+// ⬇️ КОНФИГУРАЦИИ RESERVI.RU (1C) - ПАДЕЛ ⬇️
+export const SITE_PADEL_CONFIGS: SiteConfig[] = [
+  {
+    name: PadelSiteId.KORTY_SETKI,
+    clubId: "2db37df2-20f6-11f0-872a-00505683cb0f",
+    clubTitle: "КОРТЫ-СЕТКИ",
+    serviceId: "71d50edc-24da-11f0-9586-00505683cb0f",
+    apiKey: "fcc5fc45-cd9a-4725-91ef-f9775654a2d8",
+    daysAhead: 14
+  },
+  {
+    name: PadelSiteId.PADEL_VIDNOE,
+    clubId: "a66dd8e3-ada8-11f0-bb9c-14187753eeff",
+    clubTitle: "Падел Арктика",
+    serviceId: "277a0aff-a4e7-11f0-bb9c-14187753eeff",
+    apiKey: "74cceffd-1f2f-4571-86cd-8bf1c8a38687",
+    daysAhead: 14
+  },
+];
+
 // ⬇️ КОНФИГУРАЦИИ VIVACRM (api.vivacrm.ru) ⬇️
 export const VIVACRM_CONFIGS: VivaCrmConfig[] = [
   {
