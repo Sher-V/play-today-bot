@@ -91,7 +91,7 @@ export const PADEL_COURT_IS_CITY: Record<string, boolean> = {
 export const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
   [PadelSiteId.ROCKET_PADEL_CLUB]: ["moscow-region"],
   [PadelSiteId.PADEL_FRIENDS]: ["center"],
-  [PadelSiteId.BUENOS_PADEL]: ["center"],
+  [PadelSiteId.BUENOS_PADEL]: ["north"],
   [PadelSiteId.PADEL_BELOZER]: ["south"],
   [PadelSiteId.TENNIS_CAPITAL_PADEL_SAVELOVSKAYA]: ["north"],
   [PadelSiteId.TENNIS_CAPITAL_PADEL_VDNH]: ["north"],

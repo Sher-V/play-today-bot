@@ -30,7 +30,7 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.TENNIS_CAPITAL]: "Tennis Capital",
   [TennisSiteId.LUZHNIKI_TENNIS]: "Лужники",
   [TennisSiteId.COOLTENNIS_BAUMANSKAYA]: "CoolTennis Бауманская",
-  [TennisSiteId.OLONETSKIY]: "Олонецкий",
+  [TennisSiteId.OLONETSKIY]: "Чемпион",
   [TennisSiteId.SLICE_TENNIS]: "Slice"
 };
 
