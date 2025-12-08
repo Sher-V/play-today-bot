@@ -2,7 +2,7 @@ import { VivaCrmConfig } from '../../constants/slots-constants';
 import { formatDateForYClients } from './yclients-fetcher';
 
 // Типы для слотов
-interface Slot {
+export interface Slot {
   time: string;
   dateTime: string;
   duration: number;
@@ -40,20 +40,24 @@ interface VivaCrmResponse {
 }
 
 /**
- * Парсит ISO 8601 duration (PT1H) в минуты
+ * Парсит ISO 8601 duration (PT1H, PT30M, PT1H30M, PT2H, PT2H30M) в минуты
  */
 function parseDuration(duration: string): number {
-  const match = duration.match(/PT(\d+)H?(\d+)?M?/);
-  if (!match) return 60;
-  const hours = parseInt(match[1] || '0', 10);
-  const minutes = parseInt(match[2] || '0', 10);
+  // Правильный парсинг ISO 8601 duration: PT1H, PT30M, PT1H30M, PT2H, PT2H30M
+  // Примеры: "PT1H" -> 60, "PT30M" -> 30, "PT1H30M" -> 90, "PT2H" -> 120, "PT2H30M" -> 150
+  const hoursMatch = duration.match(/(\d+)H/);
+  const minutesMatch = duration.match(/(\d+)M/);
+  
+  const hours = hoursMatch ? parseInt(hoursMatch[1], 10) : 0;
+  const minutes = minutesMatch ? parseInt(minutesMatch[1], 10) : 0;
+  
   return hours * 60 + minutes;
 }
 
 /**
  * Делает запрос к VivaCRM API для одного дня
  */
-async function fetchVivaCrmSlotsForDay(config: VivaCrmConfig, dateStr: string): Promise<Slot[]> {
+export async function fetchVivaCrmSlotsForDay(config: VivaCrmConfig, dateStr: string): Promise<Slot[]> {
   const url = `https://api.vivacrm.ru/end-user/api/v1/${config.tenantId}/products/master-services/${config.serviceId}/timeslots`;
   
   const requestBody = {
@@ -93,14 +97,20 @@ async function fetchVivaCrmSlotsForDay(config: VivaCrmConfig, dateStr: string): 
       const timePart = dateTimeParts[1].substring(0, 5);
       
       const duration = parseDuration(item.availableDuration);
+      const price = item.price?.from ?? null;
+      const roomName = item.roomName ? `Корт ${item.roomName}` : null;
       
-      slots.push({
-        time: timePart,
-        dateTime: `${datePart} ${timePart}`,
-        duration,
-        price: item.price?.from ?? null,
-        roomName: item.roomName ? `Корт ${item.roomName}` : null
-      });
+      // Фильтруем только часовые слоты: если слот 60 минут или более - превращаем в один часовой слот
+      if (duration >= 60) {
+        slots.push({
+          time: timePart,
+          dateTime: `${datePart} ${timePart}`,
+          duration: 60,
+          price,
+          roomName
+        });
+      }
+      // Если слот меньше 60 минут - пропускаем
     }
   }
   
