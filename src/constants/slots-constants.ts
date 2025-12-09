@@ -101,6 +101,14 @@ export const SITE_CONFIGS: SiteConfig[] = [
     useSalonId: true,  // Нет service_id, используем salonId формат
     daysAhead: 14
   },
+  {
+    name: TennisSiteId.SPORTVSEGDA_YANTAR,
+    clubId: "7af39aae-6932-11f0-bb9a-14187753eeff",
+    clubTitle: "Янтарь",
+    serviceId: "0cb62d58-93ac-11f0-bb9c-14187753eeff",
+    apiKey: "f6ae8b4b-165e-407f-90bc-e0f58c758760",
+    daysAhead: 14
+  },
 ];
 
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ТЕННИС ⬇️

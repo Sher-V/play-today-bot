@@ -16,7 +16,8 @@ export enum TennisSiteId {
   LUZHNIKI_TENNIS = "luzhniki-tennis",
   COOLTENNIS_BAUMANSKAYA = "cooltennis-baumanskaya",
   OLONETSKIY = "olonetskiy",
-  SLICE_TENNIS = "slice-tennis"
+  SLICE_TENNIS = "slice-tennis",
+  SPORTVSEGDA_YANTAR = "sportvsegda-yantar"
 }
 
 // Названия площадок для отображения (теннис)
@@ -37,7 +38,8 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.LUZHNIKI_TENNIS]: "Лужники",
   [TennisSiteId.COOLTENNIS_BAUMANSKAYA]: "CoolTennis Бауманская",
   [TennisSiteId.OLONETSKIY]: "Чемпион",
-  [TennisSiteId.SLICE_TENNIS]: "Slice"
+  [TennisSiteId.SLICE_TENNIS]: "Slice",
+  [TennisSiteId.SPORTVSEGDA_YANTAR]: "Теннис СпортВсегда Янтарь"
 };
 
 // Ссылки на бронирование кортов (теннис)
@@ -58,7 +60,8 @@ export const TENNIS_COURT_LINKS: Record<string, string> = {
   [TennisSiteId.LUZHNIKI_TENNIS]: "https://tennis.luzhniki.ru/#courts",
   [TennisSiteId.COOLTENNIS_BAUMANSKAYA]: "https://cooltennis.ru/timetable",
   [TennisSiteId.OLONETSKIY]: "https://findsport.ru/playground/5154",
-  [TennisSiteId.SLICE_TENNIS]: "https://slicetennis-club.com/"
+  [TennisSiteId.SLICE_TENNIS]: "https://slicetennis-club.com/",
+  [TennisSiteId.SPORTVSEGDA_YANTAR]: "https://tennisclubstrogino.ru/arenda/"
 };
 
 // Ссылки на карты кортов (теннис)
@@ -79,7 +82,8 @@ export const TENNIS_COURT_MAPS: Record<string, string> = {
   [TennisSiteId.GALLERY_CORT]: "https://yandex.ru/maps/org/galereya/1366934557/?ll=37.715830%2C55.680707&z=16.96",
   [TennisSiteId.OLONETSKIY]: "https://yandex.ru/maps/org/chempion/51651714906/?ll=37.662836%2C55.880622&z=16.67",
   [TennisSiteId.IMPULS]: "https://yandex.ru/maps/org/tsentr_tennisnykh_tekhnologiy_impuls/226524913148/?ll=37.753979%2C55.884070&z=16.67",
-  [TennisSiteId.VIDNYSPORT]: "https://yandex.ru/maps/org/i_love_tennis/15458668670/?ll=37.665431%2C55.551756&z=12.59"
+  [TennisSiteId.VIDNYSPORT]: "https://yandex.ru/maps/org/i_love_tennis/15458668670/?ll=37.665431%2C55.551756&z=12.59",
+  [TennisSiteId.SPORTVSEGDA_YANTAR]: "https://yandex.ru/maps/-/CLsyYJyX"
 };
 
 // Маппинг метро/города для кортов (теннис)
@@ -100,7 +104,8 @@ export const TENNIS_COURT_METRO: Record<string, string> = {
   [TennisSiteId.GALLERY_CORT]: "Печатники",
   [TennisSiteId.OLONETSKIY]: "Медведково",
   [TennisSiteId.IMPULS]: "Мытищи",
-  [TennisSiteId.VIDNYSPORT]: "Видное"
+  [TennisSiteId.VIDNYSPORT]: "Видное",
+  [TennisSiteId.SPORTVSEGDA_YANTAR]: "Строгино"
 };
 
 // Маппинг округов/районов для кортов (теннис)
@@ -121,7 +126,8 @@ export const TENNIS_COURT_DISTRICTS: Record<string, string> = {
   [TennisSiteId.GALLERY_CORT]: "ЮВАО",
   [TennisSiteId.OLONETSKIY]: "СВАО",
   [TennisSiteId.IMPULS]: "Мытищи",
-  [TennisSiteId.VIDNYSPORT]: "Видное"
+  [TennisSiteId.VIDNYSPORT]: "Видное",
+  [TennisSiteId.SPORTVSEGDA_YANTAR]: "СЗАО"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
@@ -149,6 +155,7 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.LUZHNIKI_TENNIS]: ["center"],
   [TennisSiteId.COOLTENNIS_BAUMANSKAYA]: ["east"],
   [TennisSiteId.OLONETSKIY]: ["north"],
-  [TennisSiteId.SLICE_TENNIS]: ["east"]
+  [TennisSiteId.SLICE_TENNIS]: ["east"],
+  [TennisSiteId.SPORTVSEGDA_YANTAR]: ["north", "west"]
 };
 
