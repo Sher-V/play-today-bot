@@ -166,6 +166,15 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
       3057405: "Корт 2"
     }
   },
+  {
+    name: TennisSiteId.TENNIS_CAPITAL_VDNH,
+    locationId: 818035,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b876619.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    staffId: 4841235
+  },
 ];
 
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ПАДЕЛ ⬇️
