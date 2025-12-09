@@ -87,6 +87,20 @@ function addThirtyMinutes(time: string): string {
 }
 
 /**
+ * Генерирует все возможные времена с шагом 30 минут от 06:00 до 23:00
+ */
+function generateAllPossibleTimes(): string[] {
+  const times: string[] = [];
+  for (let hour = 6; hour < 24; hour++) {
+    times.push(`${String(hour).padStart(2, '0')}:00`);
+    if (hour < 23) {
+      times.push(`${String(hour).padStart(2, '0')}:30`);
+    }
+  }
+  return times;
+}
+
+/**
  * Извлекает свободные слоты из расписания FindSport
  * Слот считается свободным только если оба полчаса свободны (текущий И следующий +30 мин)
  * Это нужно потому что минимальная бронь - 1 час
@@ -94,15 +108,14 @@ function addThirtyMinutes(time: string): string {
 function extractFindSportFreeSlots(schedule: FindSportSchedule, config: FindSportConfig): SiteSlots {
   const result: SiteSlots = {};
   const allCourtIds = Object.keys(config.courts);
+  const allPossibleTimes = generateAllPossibleTimes();
 
   for (const [date, times] of Object.entries(schedule)) {
     const daySlots: Slot[] = [];
 
-    // Собираем все временные слоты за день
-    const allTimes = Object.keys(times).sort();
-
-    for (const time of allTimes) {
-      const bookedCourts = times[time] || {};
+    // Проверяем все возможные времена, а не только те, что есть в ответе API
+    // Если время отсутствует в ответе, считаем его свободным
+    for (const time of allPossibleTimes) {
       const nextTime = addThirtyMinutes(time);
       
       // Пропускаем 23:30 - после него нет слотов, час забронировать невозможно
@@ -110,10 +123,19 @@ function extractFindSportFreeSlots(schedule: FindSportSchedule, config: FindSpor
         continue;
       }
       
-      const nextBookedCourts = times[nextTime] || {};
+      // Получаем данные о кортах для текущего времени
+      // Если времени нет в ответе или значение null, корт свободен
+      const currentTimeData = times[time];
+      const nextTimeData = times[nextTime];
+      
+      // Если время отсутствует (undefined) или null, считаем что корты свободны
+      const bookedCourts = (currentTimeData && typeof currentTimeData === 'object') ? currentTimeData : {};
+      const nextBookedCourts = (nextTimeData && typeof nextTimeData === 'object') ? nextTimeData : {};
 
       // Для каждого корта проверяем, свободен ли он И на следующие 30 минут тоже
       for (const courtId of allCourtIds) {
+        // Если время отсутствует в ответе или значение null/undefined, корт свободен
+        // Если значение === 12, корт занят
         const isCurrentBooked = bookedCourts[courtId] === 12;
         const isNextBooked = nextBookedCourts[courtId] === 12;
 

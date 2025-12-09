@@ -475,8 +475,8 @@ function getDatesForWeekRange(pageOffset: number = 0): string[] {
   const currentDate = new Date(startDate);
   
   for (let i = 0; i < DAYS_PER_PAGE; i++) {
-    // Используем локальное время вместо UTC
-    const dateStr = formatDateToYYYYMMDD(currentDate);
+    // Используем форматирование московской даты для правильного определения даты
+    const dateStr = formatMoscowDateToYYYYMMDD(currentDate);
     
     // Добавляем все даты без фильтрации по наличию слотов
     allDatesInRange.push(dateStr);
@@ -491,15 +491,16 @@ function getDatesForWeekRange(pageOffset: number = 0): string[] {
  */
 function formatDateButton(dateKey: string): string {
   const date = new Date(dateKey);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
+  // Используем московское время для правильного определения "сегодня" и "завтра"
+  const moscowToday = getMoscowTime();
+  moscowToday.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(moscowToday);
   tomorrow.setDate(tomorrow.getDate() + 1);
   
   const dateObj = new Date(dateKey);
   dateObj.setHours(0, 0, 0, 0);
   
-  if (dateObj.getTime() === today.getTime()) {
+  if (dateObj.getTime() === moscowToday.getTime()) {
     return 'Сегодня';
   }
   if (dateObj.getTime() === tomorrow.getTime()) {
@@ -740,10 +741,25 @@ function getMoscowTime(): Date {
   return moscowTime;
 }
 
+/**
+ * Форматирует московскую дату в формат YYYY-MM-DD
+ * Использует правильное форматирование без конвертации в UTC
+ */
+function formatMoscowDateToYYYYMMDD(moscowDate: Date): string {
+  // Используем Intl для получения правильной даты в московском часовом поясе
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(moscowDate);
+}
+
 function getAvailableTimeOptions(dateKey: string): typeof timeOptions {
   // Получаем сегодняшнюю дату в московском времени
   const moscowNow = getMoscowTime();
-  const today = moscowNow.toISOString().split('T')[0];
+  const today = formatMoscowDateToYYYYMMDD(moscowNow);
   
   // Если это не сегодня, возвращаем все опции
   if (dateKey !== today) {
@@ -1601,9 +1617,11 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const sport = parts[1] === SportType.PADEL ? SportType.PADEL : SportType.TENNIS;
     
     if (dateType === 'today') {
-      const today = new Date();
-      const dateStr = today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-      const dateKey = today.toISOString().split('T')[0]; // YYYY-MM-DD
+      // Используем московское время для правильного определения "сегодня"
+      const moscowToday = getMoscowTime();
+      moscowToday.setHours(0, 0, 0, 0);
+      const dateStr = moscowToday.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+      const dateKey = formatMoscowDateToYYYYMMDD(moscowToday); // YYYY-MM-DD
       
       // Сохраняем состояние поиска
       const searchState: SearchState = {
@@ -1673,10 +1691,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
       
     } else if (dateType === 'tomorrow') {
-      const tomorrow = new Date();
+      // Используем московское время для правильного определения "завтра"
+      const moscowToday = getMoscowTime();
+      moscowToday.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(moscowToday);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const dateStr = tomorrow.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-      const dateKey = tomorrow.toISOString().split('T')[0]; // YYYY-MM-DD
+      const dateKey = formatMoscowDateToYYYYMMDD(tomorrow); // YYYY-MM-DD
       
       // Сохраняем состояние поиска
       const searchState: SearchState = {

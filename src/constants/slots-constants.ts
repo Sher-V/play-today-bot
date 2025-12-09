@@ -448,6 +448,16 @@ export const FINDSPORT_CONFIGS: FindSportConfig[] = [
     daysAhead: 7,
     cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; phpsession=cf6438fb8c534abc640608072d387832"
   },
+  {
+    name: TennisSiteId.ENERGIYA_STADIUM,
+    playgroundId: "2137",
+    courts: {
+      "1700": "Корт 1",
+      "1702": "Корт 2"
+    },
+    daysAhead: 7,
+    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; phpsession=cf6438fb8c534abc640608072d387832"
+  },
 ];
 
 export const API_URL = 'https://reservi.ru/api-fit1c/json/v2/';

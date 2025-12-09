@@ -1,0 +1,658 @@
+{
+  "lastUpdated": "2025-12-09T21:35:53.652Z",
+  "sites": {
+    "impuls": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 2300,
+          "roomName": "ХАРД 4"
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": 2300,
+          "roomName": "ХАРД 4"
+        },
+        {
+          "time": "09:00",
+          "dateTime": "2025-12-10 09:00",
+          "duration": 60,
+          "price": 2600,
+          "roomName": "ХАРД 4"
+        },
+        {
+          "time": "14:00",
+          "dateTime": "2025-12-10 14:00",
+          "duration": 60,
+          "price": 2600,
+          "roomName": "ХАРД 1"
+        },
+        {
+          "time": "15:00",
+          "dateTime": "2025-12-10 15:00",
+          "duration": 60,
+          "price": 3300,
+          "roomName": "ХАРД 3"
+        }
+      ]
+    },
+    "spartak-grunt": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 2300,
+          "roomName": "Корт №4"
+        }
+      ]
+    },
+    "spartak-hard": {
+      "2025-12-10": [
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": 3300,
+          "roomName": "Корт №8"
+        }
+      ]
+    },
+    "itc-tsaritsyno": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №1"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №2"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №3"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №4"
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №2"
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №4"
+        },
+        {
+          "time": "09:00",
+          "dateTime": "2025-12-10 09:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №1"
+        },
+        {
+          "time": "17:00",
+          "dateTime": "2025-12-10 17:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт №5"
+        }
+      ]
+    },
+    "itc-mytischy": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 2200,
+          "roomName": "Теннисный Корт 4"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 2200,
+          "roomName": "Теннисный Корт 5"
+        },
+        {
+          "time": "12:00",
+          "dateTime": "2025-12-10 12:00",
+          "duration": 60,
+          "price": 2500,
+          "roomName": "Теннисный Корт 5"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": 2500,
+          "roomName": "Теннисный Корт 3"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": 2500,
+          "roomName": "Теннисный Корт 4"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": 2500,
+          "roomName": "Теннисный Корт 5"
+        }
+      ]
+    },
+    "vidnyysport": {
+      "2025-12-10": [
+        {
+          "time": "19:00",
+          "dateTime": "2025-12-10 19:00",
+          "duration": 60,
+          "price": 3200,
+          "roomName": "Корт 2"
+        }
+      ]
+    },
+    "sportvsegda-yantar": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 1"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 3"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 4"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 5"
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 1"
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 5"
+        },
+        {
+          "time": "09:00",
+          "dateTime": "2025-12-10 09:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "15:00",
+          "dateTime": "2025-12-10 15:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 4"
+        },
+        {
+          "time": "15:00",
+          "dateTime": "2025-12-10 15:00",
+          "duration": 60,
+          "price": 4000,
+          "roomName": "Корт 5"
+        }
+      ]
+    },
+    "pro-tennis-kashirka": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "07:30",
+          "dateTime": "2025-12-10 07:30",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        }
+      ]
+    },
+    "megasport-tennis": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "07:30",
+          "dateTime": "2025-12-10 07:30",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "12:30",
+          "dateTime": "2025-12-10 12:30",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "14:00",
+          "dateTime": "2025-12-10 14:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "20:00",
+          "dateTime": "2025-12-10 20:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "22:30",
+          "dateTime": "2025-12-10 22:30",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        }
+      ]
+    },
+    "gallery-cort": {
+      "2025-12-10": [
+        {
+          "time": "16:00",
+          "dateTime": "2025-12-10 16:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        }
+      ]
+    },
+    "tennis-capital-voiskovskaya": {
+      "2025-12-10": [
+        {
+          "time": "07:30",
+          "dateTime": "2025-12-10 07:30",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        }
+      ]
+    },
+    "tennis-capital-savelovskaya": {
+      "2025-12-10": [
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 1"
+        },
+        {
+          "time": "14:00",
+          "dateTime": "2025-12-10 14:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 1"
+        },
+        {
+          "time": "15:00",
+          "dateTime": "2025-12-10 15:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 1"
+        },
+        {
+          "time": "17:00",
+          "dateTime": "2025-12-10 17:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 1"
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "16:00",
+          "dateTime": "2025-12-10 16:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        }
+      ]
+    },
+    "tennis-capital-yuzhnaya": {
+      "2025-12-10": [
+        {
+          "time": "18:00",
+          "dateTime": "2025-12-10 18:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "21:00",
+          "dateTime": "2025-12-10 21:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        }
+      ]
+    },
+    "tennis-capital-vdnh": {
+      "2025-12-10": [
+        {
+          "time": "06:00",
+          "dateTime": "2025-12-10 06:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "07:00",
+          "dateTime": "2025-12-10 07:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "08:00",
+          "dateTime": "2025-12-10 08:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "09:00",
+          "dateTime": "2025-12-10 09:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "10:00",
+          "dateTime": "2025-12-10 10:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "12:00",
+          "dateTime": "2025-12-10 12:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "13:00",
+          "dateTime": "2025-12-10 13:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "14:00",
+          "dateTime": "2025-12-10 14:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "15:00",
+          "dateTime": "2025-12-10 15:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "16:00",
+          "dateTime": "2025-12-10 16:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "17:00",
+          "dateTime": "2025-12-10 17:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "18:00",
+          "dateTime": "2025-12-10 18:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "19:00",
+          "dateTime": "2025-12-10 19:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "22:30",
+          "dateTime": "2025-12-10 22:30",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": null
+        }
+      ]
+    },
+    "luzhniki-tennis": {
+      "2025-12-10": [
+        {
+          "time": "22:00",
+          "dateTime": "2025-12-10 22:00",
+          "duration": 60,
+          "price": 7000,
+          "roomName": "Корт 3"
+        }
+      ]
+    },
+    "cooltennis-baumanskaya": {
+      "2025-12-10": [
+        {
+          "time": "12:30",
+          "dateTime": "2025-12-10 12:30",
+          "duration": 60,
+          "price": null,
+          "roomName": "Аренда корта Бауманская ВЫХОДНЫЕ СТАНДАРТ"
+        },
+        {
+          "time": "13:00",
+          "dateTime": "2025-12-10 13:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Аренда корта Бауманская ВЫХОДНЫЕ СТАНДАРТ"
+        },
+        {
+          "time": "13:30",
+          "dateTime": "2025-12-10 13:30",
+          "duration": 60,
+          "price": null,
+          "roomName": "Аренда корта Бауманская ВЫХОДНЫЕ СТАНДАРТ"
+        },
+        {
+          "time": "14:00",
+          "dateTime": "2025-12-10 14:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Аренда корта Бауманская ВЫХОДНЫЕ СТАНДАРТ"
+        },
+        {
+          "time": "17:00",
+          "dateTime": "2025-12-10 17:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Аренда корта Бауманская ВЫХОДНЫЕ СТАНДАРТ"
+        }
+      ]
+    },
+    "olonetskiy": {
+      "2025-12-10": [
+        {
+          "time": "13:30",
+          "dateTime": "2025-12-10 13:30",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "13:30",
+          "dateTime": "2025-12-10 13:30",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 4"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "23:00",
+          "dateTime": "2025-12-10 23:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 4"
+        }
+      ]
+    },
+    "slice-tennis": {
+      "2025-12-10": [
+        {
+          "time": "12:00",
+          "dateTime": "2025-12-10 12:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        },
+        {
+          "time": "12:00",
+          "dateTime": "2025-12-10 12:00",
+          "duration": 60,
+          "price": null,
+          "roomName": "Корт 2"
+        }
+      ]
+    }
+  }
+}
