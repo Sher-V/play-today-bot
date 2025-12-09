@@ -847,7 +847,7 @@ async function handleStart(msg: TelegramBot.Message) {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }],
         [{ text: '🏓 Найти корт (падел)' }],
-        [{ text: '💬 Обратная связь' }],
+        [{ text: '💬 Чат участников' }],
       ],
       resize_keyboard: true
     }
@@ -1000,7 +1000,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         }
       });
       break;
-    case '💬 Обратная связь':
+    case '💬 Чат участников':
       // Отслеживаем клик на текстовую кнопку
       if (userId) {
         trackButtonClick({
@@ -2000,7 +2000,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }],
           [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '💬 Обратная связь' }]
+          [{ text: '💬 Чат участников' }]
           // [{ text: '👤 Профиль' }]
         ],
         resize_keyboard: true
