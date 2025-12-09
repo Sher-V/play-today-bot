@@ -791,7 +791,8 @@ function getTimeKeyboard(selectedTimeSlots: string[], availableOptions: typeof t
 function getPaginationKeyboard(
   currentPage: number,
   totalPages: number,
-  sport: Sport
+  sport: Sport,
+  showFeedback: boolean = false
 ): TelegramBot.InlineKeyboardButton[][] {
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
   
@@ -810,6 +811,14 @@ function getPaginationKeyboard(
     }
     
     buttons.push(paginationRow);
+  }
+  
+  // Кнопки обратной связи (только на первой странице при первом показе результатов)
+  if (showFeedback && currentPage === 1) {
+    buttons.push([
+      { text: 'Спасибо 👍', callback_data: 'feedback_yes' },
+      { text: 'Не помогло 👎', callback_data: 'feedback_no' }
+    ]);
   }
   
   // Кнопка "Выбрать другую дату"
@@ -1252,7 +1261,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
               parse_mode: 'Markdown',
               disable_web_page_preview: true,
               reply_markup: {
-                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport, true)
               }
             });
           } else {
@@ -1260,7 +1269,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
               parse_mode: 'Markdown',
               disable_web_page_preview: true,
               reply_markup: {
-                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport, true)
               }
             });
           }
@@ -1997,6 +2006,65 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         resize_keyboard: true
       }
     });
+    return;
+  }
+
+  // Обработка обратной связи
+  if (data === 'feedback_yes') {
+    // Отслеживаем клик на кнопку обратной связи
+    const buttonLabel = query.message?.reply_markup?.inline_keyboard
+      ?.flat()
+      .find(btn => btn.callback_data === data)?.text;
+    
+    trackButtonClick({
+      userId,
+      userName: query.from.first_name || query.from.username || undefined,
+      chatId,
+      buttonType: 'callback',
+      buttonId: data,
+      buttonLabel,
+      messageId: query.message?.message_id,
+      sessionId: generateSessionId(userId),
+      context: {
+        buttonType: 'feedback',
+        buttonAction: 'positive',
+        username: query.from.username,
+        languageCode: query.from.language_code,
+      },
+    }).catch(err => {
+      console.error('Error tracking feedback button click:', err);
+    });
+    
+    await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK_YES);
+    return;
+  }
+
+  if (data === 'feedback_no') {
+    // Отслеживаем клик на кнопку обратной связи
+    const buttonLabel = query.message?.reply_markup?.inline_keyboard
+      ?.flat()
+      .find(btn => btn.callback_data === data)?.text;
+    
+    trackButtonClick({
+      userId,
+      userName: query.from.first_name || query.from.username || undefined,
+      chatId,
+      buttonType: 'callback',
+      buttonId: data,
+      buttonLabel,
+      messageId: query.message?.message_id,
+      sessionId: generateSessionId(userId),
+      context: {
+        buttonType: 'feedback',
+        buttonAction: 'negative',
+        username: query.from.username,
+        languageCode: query.from.language_code,
+      },
+    }).catch(err => {
+      console.error('Error tracking feedback button click:', err);
+    });
+    
+    await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK_NO);
     return;
   }
 
