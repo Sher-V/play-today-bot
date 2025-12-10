@@ -25,6 +25,7 @@ import {
 } from './constants/padel-constants';
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
+import { getCourtPrice } from './constants/pricing-config';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -543,8 +544,8 @@ function formatSlotsPage(
   sport: Sport = SportType.TENNIS,
   page: number = 1,
   pageSize: number = 5,
-  lastUpdated?: string,
-  prefix?: string
+  lastUpdated: string | undefined,
+  dateKey: string // Дата в формате YYYY-MM-DD для расчета цен
 ): string {
   if (siteSlots.length === 0) {
     const emoji = sport === SportType.PADEL ? '🏓' : '🎾';
@@ -559,11 +560,7 @@ function formatSlotsPage(
   const COURT_DISTRICTS = sport === SportType.PADEL ? PADEL_COURT_DISTRICTS : TENNIS_COURT_DISTRICTS;
   const COURT_IS_CITY = sport === SportType.PADEL ? PADEL_COURT_IS_CITY : TENNIS_COURT_IS_CITY;
   
-  let message = '';
-  if (prefix) {
-    message = `${prefix}\n\n`;
-  }
-  message += `${emoji} *Свободные корты на ${date}*\n\n`;
+  let message = `${emoji} *Свободные корты на ${date}*\n\n`;
   
   // Вычисляем, какие корты показывать на этой странице
   const startIndex = (page - 1) * pageSize;
@@ -631,8 +628,19 @@ function formatSlotsPage(
     
     for (const time of times) {
       const timeSlots = groupedByTime[time];
-      const price = timeSlots[0].price;
+      let price = timeSlots[0].price;
       const duration = timeSlots[0].duration;
+      
+      // Всегда пытаемся получить цену из конфигурации, если она есть для этого корта
+      // Это гарантирует, что цены из конфигурации имеют приоритет над ценами в слотах
+      const [hours, minutes] = time.split(':').map(Number);
+      // Формируем строку с московским часовым поясом
+      const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+      const configPrice = getCourtPrice(siteName, dateTimeStr);
+      // Используем цену из конфигурации, если она найдена, иначе используем цену из слота
+      if (configPrice !== null) {
+        price = configPrice;
+      }
       
       // Формируем строку с информацией о слоте
       let slotInfo = `  ⏰ ${time}`;
@@ -1285,10 +1293,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const filteredByLocation = filterSlotsByLocation(siteSlots, searchState.selectedLocations, searchState.sport);
       
       // Фильтруем по времени
-      const filteredSlots = sortSlotsByPriority(
-        filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots),
-        searchState.sport
-      );
+      const filteredByTime = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
+      
+      // Сортируем по приоритету
+      const filteredSlots = sortSlotsByPriority(filteredByTime, searchState.sport);
       
       // Форматируем и отправляем сообщение
       const emoji = searchState.sport === SportType.PADEL ? '🏓' : '🎾';
@@ -1390,7 +1398,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             searchState.sport,
             1,
             pageSize,
-            slotsData.lastUpdated
+            slotsData.lastUpdated,
+            searchState.date
           );
           
           const messageId = query.message?.message_id;
@@ -1998,7 +2007,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       searchState.sport,
       page,
       pageSize,
-      searchState.lastUpdated
+      searchState.lastUpdated,
+      searchState.date
     );
     
     // Обновляем сообщение
@@ -2037,7 +2047,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       searchState.sport,
       currentPage,
       pageSize,
-      searchState.lastUpdated
+      searchState.lastUpdated,
+      searchState.date
     );
     
     const messageId = query.message?.message_id;

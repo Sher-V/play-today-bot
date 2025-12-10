@@ -20,6 +20,7 @@ import { fetchMoyKlassSlotsForSite } from './moyklass-fetcher';
 import { fetchFindSportSlotsForSite } from './findsport-fetcher';
 import { getDayTimestamp } from '../../utils/date-utils';
 import { SportType, type Sport } from '../../constants/sport-constants';
+import { getCourtWorkingHours } from '../../constants/pricing-config';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -246,6 +247,45 @@ function extractSlotsFromHtml(html: string): RawSlot[] {
 }
 
 /**
+ * Фильтрует слоты по часам работы корта
+ */
+function filterSiteSlotsByWorkingHours(siteSlots: SiteSlots, siteName: string): SiteSlots {
+  // Получаем часы работы для этого корта
+  const workingHours = getCourtWorkingHours(siteName);
+  
+  // Если часы работы не указаны, возвращаем все слоты
+  if (!workingHours) {
+    return siteSlots;
+  }
+  
+  const filtered: SiteSlots = {};
+  
+  // Фильтруем слоты по часам работы для каждой даты
+  for (const [date, slots] of Object.entries(siteSlots)) {
+    const filteredSlots = slots.filter(slot => {
+      // Парсим время из слота (формат обычно "HH:MM")
+      const timeMatch = slot.time.match(/(\d{1,2}):(\d{2})/);
+      if (!timeMatch) {
+        return false;
+      }
+      
+      const hour = parseInt(timeMatch[1], 10);
+      
+      // Проверяем, попадает ли час в часы работы
+      // endHour исключительно (например, 7-23 означает 7:00-22:59)
+      return hour >= workingHours.startHour && hour < workingHours.endHour;
+    });
+    
+    // Добавляем дату только если есть отфильтрованные слоты
+    if (filteredSlots.length > 0) {
+      filtered[date] = filteredSlots;
+    }
+  }
+  
+  return filtered;
+}
+
+/**
  * Трансформирует сырые слоты в целевой формат с дедупликацией
  */
 function transformSlots(rawSlots: RawSlot[]): SiteSlots {
@@ -406,7 +446,9 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
   for (const config of SITE_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (reservi.ru)`);
-      result.sites[config.name] = await fetchSlotsForSite(config);
+      const siteSlots = await fetchSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -418,7 +460,9 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
   for (const config of YCLIENTS_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (yclients)`);
-      result.sites[config.name] = await fetchYClientsSlotsForSite(config);
+      const siteSlots = await fetchYClientsSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -430,7 +474,9 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
   for (const config of VIVACRM_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (vivacrm)`);
-      result.sites[config.name] = await fetchVivaCrmSlotsForSite(config);
+      const siteSlots = await fetchVivaCrmSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -442,7 +488,9 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
   for (const config of MOYKLASS_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (moyklass)`);
-      result.sites[config.name] = await fetchMoyKlassSlotsForSite(config);
+      const siteSlots = await fetchMoyKlassSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -454,7 +502,9 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
   for (const config of FINDSPORT_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (findsport.ru)`);
-      result.sites[config.name] = await fetchFindSportSlotsForSite(config);
+      const siteSlots = await fetchFindSportSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -478,7 +528,9 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
   for (const config of SITE_PADEL_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (reservi.ru)`);
-      result.sites[config.name] = await fetchSlotsForSite(config);
+      const siteSlots = await fetchSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -490,7 +542,9 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
   for (const config of YCLIENTS_PADEL_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (yclients)`);
-      result.sites[config.name] = await fetchYClientsSlotsForSite(config);
+      const siteSlots = await fetchYClientsSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
@@ -502,7 +556,9 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
   for (const config of VIVACRM_PADEL_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (vivacrm)`);
-      result.sites[config.name] = await fetchVivaCrmSlotsForSite(config);
+      const siteSlots = await fetchVivaCrmSlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
     } catch (error) {
       console.error(`Error fetching ${config.name}:`, error);
