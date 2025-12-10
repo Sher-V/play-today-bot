@@ -165,6 +165,16 @@ export const COURT_PRICING: Record<string, CourtPricingConfig> = {
       { startHour: 20, endHour: 24, price: 2200 },
     ],
   },
+  [TennisSiteId.ENERGIYA_STADIUM]: {
+    weekday: [
+      { startHour: 6, endHour: 11, price: 2600 },
+      { startHour: 11, endHour: 17, price: 2600 },
+      { startHour: 17, endHour: 24, price: 3200 }, // 17:30-24 соответствует 17-24 в системе по часам
+    ],
+    weekend: [
+      { startHour: 6, endHour: 24, price: 2600 },
+    ],
+  },
 };
 
 /**
