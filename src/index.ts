@@ -817,14 +817,53 @@ async function getLocationKeyboard(
  * Получает доступные временные диапазоны на основе текущего времени
  * Если dateKey - сегодняшняя дата, фильтруем прошедшие диапазоны
  */
-// Функция для получения московского времени (GMT+3)
+// Функция для получения московского часа (0-23)
+// Использует Intl API для правильной работы независимо от часового пояса сервера
+function getMoscowHour(): number {
+  const now = new Date();
+  const moscowHour = parseInt(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      hour12: false
+    }).format(now)
+  );
+  return moscowHour;
+}
+
+// Функция для получения московского времени (для обратной совместимости)
+// Возвращает Date объект с московскими значениями, но getHours() будет работать неправильно
+// Используйте getMoscowHour() для получения московского часа
 function getMoscowTime(): Date {
   const now = new Date();
-  // Получаем UTC время
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  // Добавляем 3 часа для московского времени (GMT+3)
-  const moscowTime = new Date(utc + (3 * 3600000));
-  return moscowTime;
+  // Получаем компоненты московского времени
+  const moscowParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(now);
+  
+  const parts: { [key: string]: string } = {};
+  moscowParts.forEach(part => {
+    parts[part.type] = part.value;
+  });
+  
+  // Создаем Date с московскими значениями
+  // Внимание: getHours() этого объекта вернет час в локальном времени сервера, не московский!
+  // Используйте getMoscowHour() для получения московского часа
+  return new Date(
+    parseInt(parts.year!),
+    parseInt(parts.month!) - 1,
+    parseInt(parts.day!),
+    parseInt(parts.hour!),
+    parseInt(parts.minute!),
+    parseInt(parts.second!)
+  );
 }
 
 /**
@@ -844,8 +883,8 @@ function formatMoscowDateToYYYYMMDD(moscowDate: Date): string {
 
 function getAvailableTimeOptions(dateKey: string): typeof timeOptions {
   // Получаем сегодняшнюю дату в московском времени
-  const moscowNow = getMoscowTime();
-  const today = formatMoscowDateToYYYYMMDD(moscowNow);
+  const now = new Date();
+  const today = formatMoscowDateToYYYYMMDD(now);
   
   // Если это не сегодня, возвращаем все опции
   if (dateKey !== today) {
@@ -853,7 +892,7 @@ function getAvailableTimeOptions(dateKey: string): typeof timeOptions {
   }
   
   // Если это сегодня, фильтруем прошедшие диапазоны по московскому времени
-  const currentHour = moscowNow.getHours();
+  const currentHour = getMoscowHour();
   
   return timeOptions.filter(opt => {
     if (opt.id === 'any') {
@@ -1663,21 +1702,21 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Получаем доступные временные диапазоны
     const availableTimeOptions = getAvailableTimeOptions(dateKey);
     
+    // Проверяем, является ли выбранная дата сегодняшней
+    const moscowNow = getMoscowTime();
+    const today = formatMoscowDateToYYYYMMDD(moscowNow);
+    const isToday = dateKey === today;
+    
     // Фильтруем опции, исключая "Не важно" для проверки
     const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
     
-    // Проверяем, остался ли только вечерний диапазон и время >= 18:00 МСК
-    const moscowNow = getMoscowTime();
-    const currentHour = moscowNow.getHours();
-    const isOnlyEvening = timeOptionsWithoutAny.length === 1 && 
-                          timeOptionsWithoutAny[0].id === 'evening' && 
-                          currentHour >= 18;
-    
-    if (isOnlyEvening) {
-      // Автоматически выбираем вечер и показываем выбор локации
+    // Если это сегодня и остался только один временной диапазон, автоматически выбираем его
+    // Для будущих дат всегда будут все диапазоны, поэтому проверка не нужна
+    if (isToday && timeOptionsWithoutAny.length === 1) {
+      // Автоматически выбираем единственный доступный временной диапазон
       const searchState = searchStates.get(userId);
       if (searchState) {
-        searchState.selectedTimeSlots = ['evening'];
+        searchState.selectedTimeSlots = [timeOptionsWithoutAny[0].id];
         searchStates.set(userId, searchState);
         
         await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
@@ -1726,16 +1765,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       // Фильтруем опции, исключая "Не важно" для проверки
       const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
       
-      // Проверяем, остался ли только вечерний диапазон и время >= 18:00 МСК
-      const moscowNow = getMoscowTime();
-      const currentHour = moscowNow.getHours();
-      const isOnlyEvening = timeOptionsWithoutAny.length === 1 && 
-                            timeOptionsWithoutAny[0].id === 'evening' && 
-                            currentHour >= 18;
-      
-      if (isOnlyEvening) {
-        // Автоматически выбираем вечер и показываем выбор локации
-        searchState.selectedTimeSlots = ['evening'];
+      // Если остался только один временной диапазон, автоматически выбираем его
+      if (timeOptionsWithoutAny.length === 1) {
+        // Автоматически выбираем единственный доступный временной диапазон
+        searchState.selectedTimeSlots = [timeOptionsWithoutAny[0].id];
         searchStates.set(userId, searchState);
         
         const messageId = query.message?.message_id;
@@ -1797,63 +1830,29 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         selectedTimeSlots: []
       };
       
-      // Получаем доступные временные диапазоны
+      // Получаем доступные временные диапазоны (для завтра всегда все опции)
       const availableTimeOptions = getAvailableTimeOptions(dateKey);
       
-      // Фильтруем опции, исключая "Не важно" для проверки
-      const timeOptionsWithoutAny = availableTimeOptions.filter(opt => opt.id !== 'any');
+      // Сохраняем состояние поиска перед показом выбора времени
+      searchStates.set(userId, searchState);
       
-      // Проверяем, остался ли только вечерний диапазон и время >= 18:00 МСК
-      const moscowNow = getMoscowTime();
-      const currentHour = moscowNow.getHours();
-      const isOnlyEvening = timeOptionsWithoutAny.length === 1 && 
-                            timeOptionsWithoutAny[0].id === 'evening' && 
-                            currentHour >= 18;
-      
-      if (isOnlyEvening) {
-        // Автоматически выбираем вечер и показываем выбор локации
-        searchState.selectedTimeSlots = ['evening'];
-        searchStates.set(userId, searchState);
-        
-        const messageId = query.message?.message_id;
-        if (messageId) {
-          await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: 'Markdown',
-            reply_markup: {
-              inline_keyboard: await getLocationKeyboard([], searchState)
-            }
-          });
-        } else {
-          await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
-            reply_markup: {
-              inline_keyboard: await getLocationKeyboard([], searchState)
-            }
-          });
-        }
+      // Редактируем сообщение с выбором времени
+      const messageId = query.message?.message_id;
+      if (messageId) {
+        await safeEditMessageText(USER_TEXTS.TIME_SELECTION, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+          }
+        });
       } else {
-        // Сохраняем состояние поиска перед показом выбора времени
-        searchStates.set(userId, searchState);
-        
-        // Редактируем сообщение с выбором времени
-        const messageId = query.message?.message_id;
-        if (messageId) {
-          await safeEditMessageText(USER_TEXTS.TIME_SELECTION, {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: {
-              inline_keyboard: getTimeKeyboard([], availableTimeOptions)
-            }
-          });
-        } else {
-          // Fallback на sendMessage, если message_id недоступен
-          await getBot().sendMessage(chatId, USER_TEXTS.TIME_SELECTION, {
-            reply_markup: {
-              inline_keyboard: getTimeKeyboard([], availableTimeOptions)
-            }
-          });
-        }
+        // Fallback на sendMessage, если message_id недоступен
+        await getBot().sendMessage(chatId, USER_TEXTS.TIME_SELECTION, {
+          reply_markup: {
+            inline_keyboard: getTimeKeyboard([], availableTimeOptions)
+          }
+        });
       }
       
     } else if (dateType === 'custom') {
