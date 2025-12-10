@@ -110,7 +110,7 @@ export const PADEL_COURT_MAPS: Record<string, string> = {
 export const PADEL_COURT_METRO: Record<string, string> = {
   [PadelSiteId.TENNIS_CAPITAL_PADEL_SAVELOVSKAYA]: "Савеловская",
   [PadelSiteId.TENNIS_CAPITAL_PADEL_VDNH]: "ВДНХ",
-  [PadelSiteId.PADEL_FRIENDS]: "Сокольники",
+  [PadelSiteId.PADEL_FRIENDS]: "Воробьевы горы",
   [PadelSiteId.BUENOS_PADEL]: "Савеловская",
   [PadelSiteId.PADEL_BELOZER]: "Белозерская",
   [PadelSiteId.UP2_PADEL]: "Южная",
@@ -137,7 +137,7 @@ export const PADEL_COURT_METRO: Record<string, string> = {
 export const PADEL_COURT_DISTRICTS: Record<string, string> = {
   [PadelSiteId.TENNIS_CAPITAL_PADEL_SAVELOVSKAYA]: "САО",
   [PadelSiteId.TENNIS_CAPITAL_PADEL_VDNH]: "СВАО",
-  [PadelSiteId.PADEL_FRIENDS]: "ВАО",
+  [PadelSiteId.PADEL_FRIENDS]: "ЦАО",
   [PadelSiteId.BUENOS_PADEL]: "САО",
   [PadelSiteId.PADEL_BELOZER]: "СВАО",
   [PadelSiteId.UP2_PADEL]: "ЮАО",
@@ -170,7 +170,7 @@ export const PADEL_COURT_IS_CITY: Record<string, boolean> = {
 // Маппинг кортов к локациям (падел)
 export const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
   [PadelSiteId.ROCKET_PADEL_CLUB]: ["moscow-region"],
-  [PadelSiteId.PADEL_FRIENDS]: ["center", "south"],
+  [PadelSiteId.PADEL_FRIENDS]: ["center"],
   [PadelSiteId.BUENOS_PADEL]: ["north"],
   [PadelSiteId.PADEL_BELOZER]: ["north"],
   [PadelSiteId.TENNIS_CAPITAL_PADEL_SAVELOVSKAYA]: ["north"],
@@ -193,4 +193,29 @@ export const PADEL_COURT_LOCATIONS: Record<string, string[]> = {
   [PadelSiteId.ZARYAD_PADEL]: ["west", "south"],
   [PadelSiteId.PADEL_LEND]: ["moscow-region"]
 };
+
+/**
+ * Подсчитывает количество кортов по регионам на основе маппинга локаций
+ * @param courtLocations Маппинг кортов к их локациям
+ * @returns Маппинг количества кортов по каждому региону
+ */
+function calculateCourtCountsByRegion(
+  courtLocations: Record<string, string[]>
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  
+  // Проходим по всем кортам и их локациям
+  Object.values(courtLocations).forEach((locations) => {
+    locations.forEach((location) => {
+      counts[location] = (counts[location] || 0) + 1;
+    });
+  });
+  
+  return counts;
+}
+
+// Маппинг количества кортов по регионам (падел)
+// Автоматически вычисляется на основе PADEL_COURT_LOCATIONS
+export const PADEL_COURT_COUNTS_BY_REGION: Record<string, number> = 
+  calculateCourtCountsByRegion(PADEL_COURT_LOCATIONS);
 

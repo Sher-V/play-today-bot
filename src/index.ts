@@ -12,7 +12,7 @@ import {
   TENNIS_COURT_METRO,
   TENNIS_COURT_DISTRICTS,
   TENNIS_COURT_IS_CITY,
-  TENNIS_COURT_LOCATIONS
+  TENNIS_COURT_LOCATIONS,
 } from './constants/tennis-constants';
 import {
   PADEL_COURT_NAMES,
@@ -21,7 +21,7 @@ import {
   PADEL_COURT_METRO,
   PADEL_COURT_DISTRICTS,
   PADEL_COURT_IS_CITY,
-  PADEL_COURT_LOCATIONS
+  PADEL_COURT_LOCATIONS,
 } from './constants/padel-constants';
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
@@ -678,12 +678,98 @@ function getDistrictKeyboard(selectedDistricts: string[]): TelegramBot.InlineKey
   ];
 }
 
+/**
+ * Подсчитывает количество доступных кортов по локациям на основе слотов
+ */
+async function getAvailableCourtsCountByLocation(
+  sport: Sport,
+  date: string,
+  selectedTimeSlots: string[]
+): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {
+    [LocationId.WEST]: 0,
+    [LocationId.EAST]: 0,
+    [LocationId.NORTH]: 0,
+    [LocationId.SOUTH]: 0,
+    [LocationId.CENTER]: 0,
+    [LocationId.MOSCOW_REGION]: 0
+  };
+
+  // Загружаем слоты для выбранной даты
+  const slotsData = await loadSlots(sport, date);
+  if (!slotsData) {
+    return counts;
+  }
+
+  // Получаем слоты на дату
+  const siteSlots = getSlotsByDate(slotsData, date);
+  
+  // Фильтруем по выбранному времени
+  const filteredByTime = filterSlotsByTime(siteSlots, selectedTimeSlots);
+  
+  // Получаем маппинг локаций для текущего спорта
+  const COURT_LOCATIONS = sport === SportType.PADEL ? PADEL_COURT_LOCATIONS : TENNIS_COURT_LOCATIONS;
+  
+  // Подсчитываем уникальные корты в каждой локации
+  const courtsByLocation = new Map<string, Set<string>>();
+  
+  for (const { siteName } of filteredByTime) {
+    const courtLocations = COURT_LOCATIONS[siteName] || [];
+    for (const location of courtLocations) {
+      if (!courtsByLocation.has(location)) {
+        courtsByLocation.set(location, new Set());
+      }
+      courtsByLocation.get(location)!.add(siteName);
+    }
+  }
+  
+  // Заполняем counts
+  for (const [location, courts] of courtsByLocation.entries()) {
+    if (counts.hasOwnProperty(location)) {
+      counts[location] = courts.size;
+    }
+  }
+  
+  return counts;
+}
+
 // Генерация клавиатуры для выбора локаций
-function getLocationKeyboard(selectedLocations: string[]): TelegramBot.InlineKeyboardButton[][] {
+async function getLocationKeyboard(
+  selectedLocations: string[],
+  searchState?: SearchState
+): Promise<TelegramBot.InlineKeyboardButton[][]> {
+  // Получаем актуальное количество доступных кортов
+  let countsByRegion: Record<string, number> = {};
+  
+  let useFallback = false;
+  
+  if (searchState && searchState.selectedTimeSlots.length > 0) {
+    try {
+      countsByRegion = await getAvailableCourtsCountByLocation(
+        searchState.sport,
+        searchState.date,
+        searchState.selectedTimeSlots
+      );
+    } catch (error) {
+      console.error('Ошибка при подсчете доступных кортов:', error);
+      // В случае ошибки не показываем количество кортов (оставляем countsByRegion пустым)
+      useFallback = true;
+      countsByRegion = {};
+    }
+  } else if (searchState) {
+    // Если время не выбрано, не показываем количество кортов
+    useFallback = true;
+    countsByRegion = {};
+  }
+  
   // Вспомогательная функция для получения текста кнопки
   const getButtonText = (id: string) => {
     const label = locationLabels.get(id) || id;
-    return selectedLocations.includes(id) ? `✅ ${label}` : label;
+    const count = countsByRegion[id];
+    // Показываем количество только если не используем fallback и count определен
+    const countText = !useFallback && count !== undefined ? ` (${count})` : '';
+    const baseText = selectedLocations.includes(id) ? `✅ ${label}` : label;
+    return `${baseText}${countText}`;
   };
   
   return [
@@ -1320,7 +1406,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     // Обновляем клавиатуру
     await safeEditMessageReplyMarkup(
-      { inline_keyboard: getLocationKeyboard(searchState.selectedLocations) },
+      { inline_keyboard: await getLocationKeyboard(searchState.selectedLocations, searchState) },
       { chat_id: chatId, message_id: query.message?.message_id }
     );
     return;
@@ -1347,8 +1433,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
         chat_id: chatId,
         message_id: query.message?.message_id,
+        parse_mode: 'Markdown',
         reply_markup: {
-          inline_keyboard: getLocationKeyboard([])
+          inline_keyboard: await getLocationKeyboard([], searchState)
         }
       });
       return;
@@ -1592,13 +1679,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       if (searchState) {
         searchState.selectedTimeSlots = ['evening'];
         searchStates.set(userId, searchState);
+        
+        await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: await getLocationKeyboard([], searchState)
+          }
+        });
       }
-      
-      await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
-        reply_markup: {
-          inline_keyboard: getLocationKeyboard([])
-        }
-      });
     } else {
       // Показываем выбор времени
       await getBot().sendMessage(chatId, USER_TEXTS.TIME_SELECTION, {
@@ -1655,14 +1743,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
             chat_id: chatId,
             message_id: messageId,
+            parse_mode: 'Markdown',
             reply_markup: {
-              inline_keyboard: getLocationKeyboard([])
+              inline_keyboard: await getLocationKeyboard([], searchState)
             }
           });
         } else {
           await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
             reply_markup: {
-              inline_keyboard: getLocationKeyboard([])
+              inline_keyboard: await getLocationKeyboard([], searchState)
             }
           });
         }
@@ -1731,14 +1820,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
             chat_id: chatId,
             message_id: messageId,
+            parse_mode: 'Markdown',
             reply_markup: {
-              inline_keyboard: getLocationKeyboard([])
+              inline_keyboard: await getLocationKeyboard([], searchState)
             }
           });
         } else {
           await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
             reply_markup: {
-              inline_keyboard: getLocationKeyboard([])
+              inline_keyboard: await getLocationKeyboard([], searchState)
             }
           });
         }

@@ -166,3 +166,28 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.ENERGIYA_STADIUM]: ["east", "south"]
 };
 
+/**
+ * Подсчитывает количество кортов по регионам на основе маппинга локаций
+ * @param courtLocations Маппинг кортов к их локациям
+ * @returns Маппинг количества кортов по каждому региону
+ */
+function calculateCourtCountsByRegion(
+  courtLocations: Record<string, string[]>
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  
+  // Проходим по всем кортам и их локациям
+  Object.values(courtLocations).forEach((locations) => {
+    locations.forEach((location) => {
+      counts[location] = (counts[location] || 0) + 1;
+    });
+  });
+  
+  return counts;
+}
+
+// Маппинг количества кортов по регионам (теннис)
+// Автоматически вычисляется на основе TENNIS_COURT_LOCATIONS
+export const TENNIS_COURT_COUNTS_BY_REGION: Record<string, number> = 
+  calculateCourtCountsByRegion(TENNIS_COURT_LOCATIONS);
+
