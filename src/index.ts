@@ -984,6 +984,7 @@ async function handleStart(msg: TelegramBot.Message) {
   const userName = msg.from?.first_name || 'друг';
   
   await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
+    parse_mode: 'Markdown',
     reply_markup: {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }],
@@ -2106,6 +2107,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const userName = profile?.name || query.from.first_name;
     
     await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
+      parse_mode: 'Markdown',
       reply_markup: {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }],
