@@ -485,6 +485,17 @@ export const FINDSPORT_CONFIGS: FindSportConfig[] = [
     daysAhead: 14,
     cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
   },
+  {
+    name: TennisSiteId.TENNISTIME,
+    playgroundId: "4783",
+    courts: {
+      "9028": "Корт 1",
+      "9029": "Корт 2",
+      "9030": "Корт 3"
+    },
+    daysAhead: 14,
+    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
+  },
 ];
 
 export const API_URL = 'https://reservi.ru/api-fit1c/json/v2/';

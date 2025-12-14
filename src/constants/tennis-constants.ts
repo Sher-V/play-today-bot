@@ -21,7 +21,8 @@ export enum TennisSiteId {
   ENERGIYA_STADIUM = "energiya-stadium",
   TENNIS77_BELOKAMENNAYA = "tennis77-belokamennaya",
   TENNIS77_GOLYANOVO = "tennis77-golyanovo",
-  LIGA_TENNIS = "liga-tennis"
+  LIGA_TENNIS = "liga-tennis",
+  TENNISTIME = "tennistime"
 }
 
 // Названия площадок для отображения (теннис)
@@ -47,7 +48,8 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.ENERGIYA_STADIUM]: "Стадион «Энергия»",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "Tennis77 Белокаменная",
   [TennisSiteId.TENNIS77_GOLYANOVO]: "Tennis77 Гольяново",
-  [TennisSiteId.LIGA_TENNIS]: "Лига Теннис"
+  [TennisSiteId.LIGA_TENNIS]: "Лига Теннис",
+  [TennisSiteId.TENNISTIME]: "TennisTime (Lawn Tennis Club)"
 };
 
 // Ссылки на бронирование кортов (теннис)
@@ -73,7 +75,8 @@ export const TENNIS_COURT_LINKS: Record<string, string> = {
   [TennisSiteId.ENERGIYA_STADIUM]: "https://findsport.ru/playground/2137",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://findsport.ru/playground/4899",
   [TennisSiteId.TENNIS77_GOLYANOVO]: "https://findsport.ru/playground/4975",
-  [TennisSiteId.LIGA_TENNIS]: "https://findsport.ru/playground/3888"
+  [TennisSiteId.LIGA_TENNIS]: "https://findsport.ru/playground/3888",
+  [TennisSiteId.TENNISTIME]: "https://findsport.ru/playground/4783"
 };
 
 // Ссылки на карты кортов (теннис)
@@ -99,7 +102,8 @@ export const TENNIS_COURT_MAPS: Record<string, string> = {
   [TennisSiteId.ENERGIYA_STADIUM]: "https://yandex.ru/maps/-/CLsyaY10",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://yandex.ru/maps/-/CLs~A6Jz",
   [TennisSiteId.TENNIS77_GOLYANOVO]: "https://yandex.ru/maps/-/CLs~QQKg",
-  [TennisSiteId.LIGA_TENNIS]: "https://yandex.ru/maps/-/CLs~UMLZ"
+  [TennisSiteId.LIGA_TENNIS]: "https://yandex.ru/maps/-/CLs~UMLZ",
+  [TennisSiteId.TENNISTIME]: "https://yandex.ru/maps/-/CLwaMAYu"
 };
 
 // Маппинг метро/города для кортов (теннис)
@@ -125,7 +129,8 @@ export const TENNIS_COURT_METRO: Record<string, string> = {
   [TennisSiteId.ENERGIYA_STADIUM]: "Лефортово",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "Белокаменная",
   [TennisSiteId.TENNIS77_GOLYANOVO]: "Гольяново",
-  [TennisSiteId.LIGA_TENNIS]: "Калужская"
+  [TennisSiteId.LIGA_TENNIS]: "Калужская",
+  [TennisSiteId.TENNISTIME]: "Чертановская"
 };
 
 // Маппинг округов/районов для кортов (теннис)
@@ -151,7 +156,8 @@ export const TENNIS_COURT_DISTRICTS: Record<string, string> = {
   [TennisSiteId.ENERGIYA_STADIUM]: "ЮВАО",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "ВАО",
   [TennisSiteId.TENNIS77_GOLYANOVO]: "ВАО",
-  [TennisSiteId.LIGA_TENNIS]: "ЮВАО"
+  [TennisSiteId.LIGA_TENNIS]: "ЮВАО",
+  [TennisSiteId.TENNISTIME]: "ЮАО"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
@@ -184,7 +190,8 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.ENERGIYA_STADIUM]: ["east", "south"],
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: ["east"],
   [TennisSiteId.TENNIS77_GOLYANOVO]: ["east"],
-  [TennisSiteId.LIGA_TENNIS]: ["south", "east"]
+  [TennisSiteId.LIGA_TENNIS]: ["south", "east"],
+  [TennisSiteId.TENNISTIME]: ["south"]
 };
 
 /**
