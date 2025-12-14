@@ -25,7 +25,7 @@ import {
 } from './constants/padel-constants';
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
-import { getCourtPrice } from './constants/pricing-config';
+import { getCourtPrice } from './utils/config-utils';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {

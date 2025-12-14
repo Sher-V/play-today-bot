@@ -20,7 +20,7 @@ import { fetchMoyKlassSlotsForSite } from './moyklass-fetcher';
 import { fetchFindSportSlotsForSite } from './findsport-fetcher';
 import { getDayTimestamp } from '../../utils/date-utils';
 import { SportType, type Sport } from '../../constants/sport-constants';
-import { getCourtWorkingHours } from '../../constants/pricing-config';
+import { getCourtWorkingHours } from '../../utils/config-utils';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
