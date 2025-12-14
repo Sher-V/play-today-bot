@@ -458,6 +458,33 @@ export const FINDSPORT_CONFIGS: FindSportConfig[] = [
     daysAhead: 7,
     cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; phpsession=cf6438fb8c534abc640608072d387832"
   },
+  {
+    name: TennisSiteId.TENNIS77_BELOKAMENNAYA,
+    playgroundId: "4899",
+    courts: {
+      "9256": "Корт 1"
+    },
+    daysAhead: 14,
+    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
+  },
+  {
+    name: TennisSiteId.TENNIS77_GOLYANOVO,
+    playgroundId: "4975",
+    courts: {
+      "9379": "Корт 1"
+    },
+    daysAhead: 14,
+    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
+  },
+  {
+    name: TennisSiteId.LIGA_TENNIS,
+    playgroundId: "3888",
+    courts: {
+      "7260": "Корт 1"
+    },
+    daysAhead: 14,
+    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
+  },
 ];
 
 export const API_URL = 'https://reservi.ru/api-fit1c/json/v2/';

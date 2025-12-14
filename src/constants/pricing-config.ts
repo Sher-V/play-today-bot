@@ -175,6 +175,39 @@ export const COURT_PRICING: Record<string, CourtPricingConfig> = {
       { startHour: 6, endHour: 24, price: 2600 },
     ],
   },
+  [TennisSiteId.TENNIS77_BELOKAMENNAYA]: {
+    weekday: [
+      { startHour: 7, endHour: 10, price: 2300 },
+      { startHour: 10, endHour: 17, price: 2500 },
+      { startHour: 17, endHour: 22, price: 3000 },
+      { startHour: 22, endHour: 24, price: 3000 }, // Предположение: та же цена, что и 17-22
+    ],
+    weekend: [
+      { startHour: 7, endHour: 24, price: 2700 },
+    ],
+    workingHours: { startHour: 7, endHour: 24 }, // Корт работает с 7:00 до 00:00 (24:00)
+  },
+  [TennisSiteId.TENNIS77_GOLYANOVO]: {
+    weekday: [
+      { startHour: 7, endHour: 10, price: 2300 },
+      { startHour: 10, endHour: 17, price: 2500 },
+      { startHour: 17, endHour: 24, price: 3000 },
+    ],
+    weekend: [
+      { startHour: 7, endHour: 24, price: 2700 },
+    ],
+    workingHours: { startHour: 7, endHour: 24 }, // Корт работает с 7:00 до 00:00 (24:00)
+  },
+  [TennisSiteId.LIGA_TENNIS]: {
+    weekday: [
+      { startHour: 7, endHour: 16, price: 3200 },
+      { startHour: 16, endHour: 23, price: 3700 },
+    ],
+    weekend: [
+      { startHour: 7, endHour: 23, price: 3700 },
+    ],
+    workingHours: { startHour: 7, endHour: 23 }, // Корт работает с 7:00 до 23:00
+  },
 };
 
 /**
