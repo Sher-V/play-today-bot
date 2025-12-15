@@ -187,7 +187,7 @@ export const COURT_PRICING: Record<string, CourtPricingConfig> = {
     ],
     workingHours: { startHour: 7, endHour: 24 }, // Корт работает с 7:00 до 00:00 (24:00)
   },
-  [TennisSiteId.TENNIS77_GOLYANOVO]: {
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: {
     weekday: [
       { startHour: 7, endHour: 10, price: 2300 },
       { startHour: 10, endHour: 17, price: 2500 },

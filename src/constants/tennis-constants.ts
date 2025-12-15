@@ -20,7 +20,7 @@ export enum TennisSiteId {
   SPORTVSEGDA_YANTAR = "sportvsegda-yantar",
   ENERGIYA_STADIUM = "energiya-stadium",
   TENNIS77_BELOKAMENNAYA = "tennis77-belokamennaya",
-  TENNIS77_GOLYANOVO = "tennis77-golyanovo",
+  TENNIS77_KURGANSKAYA = "tennis77-kurganskaya",
   LIGA_TENNIS = "liga-tennis",
   TENNISTIME = "tennistime"
 }
@@ -47,7 +47,7 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.SPORTVSEGDA_YANTAR]: "Теннис СпортВсегда Янтарь",
   [TennisSiteId.ENERGIYA_STADIUM]: "Стадион «Энергия»",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "Tennis77 Белокаменная",
-  [TennisSiteId.TENNIS77_GOLYANOVO]: "Tennis77 Гольяново",
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: "Tennis77 Курганская",
   [TennisSiteId.LIGA_TENNIS]: "Лига Теннис",
   [TennisSiteId.TENNISTIME]: "TennisTime (Lawn Tennis Club)"
 };
@@ -73,8 +73,8 @@ export const TENNIS_COURT_LINKS: Record<string, string> = {
   [TennisSiteId.SLICE_TENNIS]: "https://slicetennis-club.com/",
   [TennisSiteId.SPORTVSEGDA_YANTAR]: "https://tennisclubstrogino.ru/arenda/",
   [TennisSiteId.ENERGIYA_STADIUM]: "https://findsport.ru/playground/2137",
-  [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://findsport.ru/playground/4899",
-  [TennisSiteId.TENNIS77_GOLYANOVO]: "https://findsport.ru/playground/4975",
+  [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://tennis77.com/korty/belokamennaya/",
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: "https://tennis77.com/korty/kurganskaya/",
   [TennisSiteId.LIGA_TENNIS]: "https://findsport.ru/playground/3888",
   [TennisSiteId.TENNISTIME]: "https://findsport.ru/playground/4783"
 };
@@ -101,7 +101,7 @@ export const TENNIS_COURT_MAPS: Record<string, string> = {
   [TennisSiteId.SPORTVSEGDA_YANTAR]: "https://yandex.ru/maps/-/CLsyYJyX",
   [TennisSiteId.ENERGIYA_STADIUM]: "https://yandex.ru/maps/-/CLsyaY10",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://yandex.ru/maps/-/CLs~A6Jz",
-  [TennisSiteId.TENNIS77_GOLYANOVO]: "https://yandex.ru/maps/-/CLs~QQKg",
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: "https://yandex.ru/maps/-/CLs~QQKg",
   [TennisSiteId.LIGA_TENNIS]: "https://yandex.ru/maps/-/CLs~UMLZ",
   [TennisSiteId.TENNISTIME]: "https://yandex.ru/maps/-/CLwaMAYu"
 };
@@ -128,7 +128,7 @@ export const TENNIS_COURT_METRO: Record<string, string> = {
   [TennisSiteId.SPORTVSEGDA_YANTAR]: "Строгино",
   [TennisSiteId.ENERGIYA_STADIUM]: "Лефортово",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "Белокаменная",
-  [TennisSiteId.TENNIS77_GOLYANOVO]: "Гольяново",
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: "Щелковская",
   [TennisSiteId.LIGA_TENNIS]: "Калужская",
   [TennisSiteId.TENNISTIME]: "Чертановская"
 };
@@ -155,7 +155,7 @@ export const TENNIS_COURT_DISTRICTS: Record<string, string> = {
   [TennisSiteId.SPORTVSEGDA_YANTAR]: "СЗАО",
   [TennisSiteId.ENERGIYA_STADIUM]: "ЮВАО",
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "ВАО",
-  [TennisSiteId.TENNIS77_GOLYANOVO]: "ВАО",
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: "ВАО",
   [TennisSiteId.LIGA_TENNIS]: "ЮВАО",
   [TennisSiteId.TENNISTIME]: "ЮАО"
 };
@@ -189,7 +189,7 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.SPORTVSEGDA_YANTAR]: ["north", "west"],
   [TennisSiteId.ENERGIYA_STADIUM]: ["east", "south"],
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: ["east"],
-  [TennisSiteId.TENNIS77_GOLYANOVO]: ["east"],
+  [TennisSiteId.TENNIS77_KURGANSKAYA]: ["east"],
   [TennisSiteId.LIGA_TENNIS]: ["south", "east"],
   [TennisSiteId.TENNISTIME]: ["south"]
 };

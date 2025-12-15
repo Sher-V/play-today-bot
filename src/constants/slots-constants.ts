@@ -51,6 +51,17 @@ export interface FindSportConfig {
   cookie?: string;        // Cookie для авторизации (опционально)
 }
 
+// Конфигурация для Tennis77 API (tennis77.s20.online)
+export interface Tennis77Config {
+  name: string;           // Название площадки
+  branchId: number;       // ID филиала (branch ID)
+  authorization: string;   // Authorization токен
+  daysAhead?: number;     // На сколько дней вперёд (по умолчанию 14)
+  cookie?: string;        // Cookie для авторизации (опционально)
+  referer?: string;        // Referer URL (опционально)
+  roomNames?: Record<number, string>;  // Маппинг ID корта -> название (опционально)
+}
+
 // ⬇️ КОНФИГУРАЦИИ ПЛОЩАДОК ⬇️
 export const SITE_CONFIGS: SiteConfig[] = [
   {
@@ -459,24 +470,6 @@ export const FINDSPORT_CONFIGS: FindSportConfig[] = [
     cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; phpsession=cf6438fb8c534abc640608072d387832"
   },
   {
-    name: TennisSiteId.TENNIS77_BELOKAMENNAYA,
-    playgroundId: "4899",
-    courts: {
-      "9256": "Корт 1"
-    },
-    daysAhead: 14,
-    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
-  },
-  {
-    name: TennisSiteId.TENNIS77_GOLYANOVO,
-    playgroundId: "4975",
-    courts: {
-      "9379": "Корт 1"
-    },
-    daysAhead: 14,
-    cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
-  },
-  {
     name: TennisSiteId.LIGA_TENNIS,
     playgroundId: "3888",
     courts: {
@@ -495,6 +488,26 @@ export const FINDSPORT_CONFIGS: FindSportConfig[] = [
     },
     daysAhead: 14,
     cookie: "fs__fsm=4857157e7d42886255baa3216a7abdbf; fs_geo_requested_by_ip=1; _ym_uid=1763209980723118928; _ym_d=1764700585; phpsession=ad1f77ef528b752f58e6f49c67605d82; _ym_isad=2; _ym_visorc=w; cookieConsent=accepted"
+  },
+];
+
+// ⬇️ КОНФИГУРАЦИИ TENNIS77 (tennis77.s20.online) ⬇️
+export const TENNIS77_CONFIGS: Tennis77Config[] = [
+  {
+    name: TennisSiteId.TENNIS77_BELOKAMENNAYA,
+    branchId: 19, // branch ID для Белокаменной
+    authorization: "3cc05624dfa5820c5f967a654e51dbab",
+    daysAhead: 14,
+    cookie: "PHPSESSID=cdc4iar48qd67r2pc1729ulpla; _csrf=a4393f90f357b9f5c15e5cdd393e6f2d0aaa792c95e0c726e31d9ad16ad810ffa%3A2%3A%7Bi%3A0%3Bs%3A5%3A%22_csrf%22%3Bi%3A1%3Bs%3A32%3A%22Ako_u2HvQj_lG-MM0M94_qw76zvLWfSZ%22%3B%7D",
+    referer: "https://tennis77.s20.online/common/1/online-schedule?data_pc=59CD90&data_locale=ru&showAvailableForEnroll=true&week_selected=51"
+  },
+  {
+    name: TennisSiteId.TENNIS77_KURGANSKAYA,
+    branchId: 10, // branch ID для Курганской
+    authorization: "07973e99796377e6f5421a4bc379696e",
+    daysAhead: 14,
+    cookie: "PHPSESSID=cdc4iar48qd67r2pc1729ulpla; _csrf=a4393f90f357b9f5c15e5cdd393e6f2d0aaa792c95e0c726e31d9ad16ad810ffa%3A2%3A%7Bi%3A0%3Bs%3A5%3A%22_csrf%22%3Bi%3A1%3Bs%3A32%3A%22Ako_u2HvQj_lG-MM0M94_qw76zvLWfSZ%22%3B%7D",
+    referer: "https://tennis77.s20.online/common/10/online-schedule?branch=10&locale=ru&pc=59CD90&crm=https://tennis77.s20.online&token=&appKey=07973e99796377e6f5421a4bc379696e"
   },
 ];
 
