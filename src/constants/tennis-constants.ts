@@ -22,7 +22,8 @@ export enum TennisSiteId {
   TENNIS77_BELOKAMENNAYA = "tennis77-belokamennaya",
   TENNIS77_KURGANSKAYA = "tennis77-kurganskaya",
   LIGA_TENNIS = "liga-tennis",
-  TENNISTIME = "tennistime"
+  TENNISTIME = "tennistime",
+  REZIDENCYA = "rezidenciya"
 }
 
 // Названия площадок для отображения (теннис)
@@ -49,7 +50,8 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "Tennis77 Белокаменная",
   [TennisSiteId.TENNIS77_KURGANSKAYA]: "Tennis77 Курганская",
   [TennisSiteId.LIGA_TENNIS]: "Лига Теннис",
-  [TennisSiteId.TENNISTIME]: "TennisTime (Lawn Tennis Club)"
+  [TennisSiteId.TENNISTIME]: "TennisTime (Lawn Tennis Club)",
+  [TennisSiteId.REZIDENCYA]: "Теннисный центр Резиденция"
 };
 
 // Ссылки на бронирование кортов (теннис)
@@ -76,7 +78,8 @@ export const TENNIS_COURT_LINKS: Record<string, string> = {
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://tennis77.com/korty/belokamennaya/",
   [TennisSiteId.TENNIS77_KURGANSKAYA]: "https://tennis77.com/korty/kurganskaya/",
   [TennisSiteId.LIGA_TENNIS]: "https://findsport.ru/playground/3888",
-  [TennisSiteId.TENNISTIME]: "https://findsport.ru/playground/4783"
+  [TennisSiteId.TENNISTIME]: "https://findsport.ru/playground/4783",
+  [TennisSiteId.REZIDENCYA]: "https://tennis-centre.ru/"
 };
 
 // Ссылки на карты кортов (теннис)
@@ -103,7 +106,8 @@ export const TENNIS_COURT_MAPS: Record<string, string> = {
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "https://yandex.ru/maps/-/CLs~A6Jz",
   [TennisSiteId.TENNIS77_KURGANSKAYA]: "https://yandex.ru/maps/-/CLs~QQKg",
   [TennisSiteId.LIGA_TENNIS]: "https://yandex.ru/maps/-/CLs~UMLZ",
-  [TennisSiteId.TENNISTIME]: "https://yandex.ru/maps/-/CLwaMAYu"
+  [TennisSiteId.TENNISTIME]: "https://yandex.ru/maps/-/CLwaMAYu",
+  [TennisSiteId.REZIDENCYA]: "https://yandex.ru/maps/-/CLw8RPLm"
 };
 
 // Маппинг метро/города для кортов (теннис)
@@ -130,7 +134,8 @@ export const TENNIS_COURT_METRO: Record<string, string> = {
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "Белокаменная",
   [TennisSiteId.TENNIS77_KURGANSKAYA]: "Щелковская",
   [TennisSiteId.LIGA_TENNIS]: "Калужская",
-  [TennisSiteId.TENNISTIME]: "Чертановская"
+  [TennisSiteId.TENNISTIME]: "Чертановская",
+  [TennisSiteId.REZIDENCYA]: "Троицк"
 };
 
 // Маппинг округов/районов для кортов (теннис)
@@ -157,14 +162,16 @@ export const TENNIS_COURT_DISTRICTS: Record<string, string> = {
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: "ВАО",
   [TennisSiteId.TENNIS77_KURGANSKAYA]: "ВАО",
   [TennisSiteId.LIGA_TENNIS]: "ЮВАО",
-  [TennisSiteId.TENNISTIME]: "ЮАО"
+  [TennisSiteId.TENNISTIME]: "ЮАО",
+  [TennisSiteId.REZIDENCYA]: "Троицк"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
 export const TENNIS_COURT_IS_CITY: Record<string, boolean> = {
   [TennisSiteId.ITC_MYTISCHY]: true,
   [TennisSiteId.IMPULS]: true,
-  [TennisSiteId.VIDNYSPORT]: true
+  [TennisSiteId.VIDNYSPORT]: true,
+  [TennisSiteId.REZIDENCYA]: true
 };
 
 // Маппинг кортов к локациям (теннис)
@@ -191,7 +198,8 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.TENNIS77_BELOKAMENNAYA]: ["east"],
   [TennisSiteId.TENNIS77_KURGANSKAYA]: ["east"],
   [TennisSiteId.LIGA_TENNIS]: ["south", "east"],
-  [TennisSiteId.TENNISTIME]: ["south"]
+  [TennisSiteId.TENNISTIME]: ["south"],
+  [TennisSiteId.REZIDENCYA]: ["moscow-region"]
 };
 
 /**

@@ -194,6 +194,15 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     slotDuration: 60,
     staffId: 4841235
   },
+  {
+    name: TennisSiteId.REZIDENCYA,
+    locationId: 1241053,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1365963.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    staffId: null
+  },
 ];
 
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ПАДЕЛ ⬇️

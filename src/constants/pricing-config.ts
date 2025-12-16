@@ -223,6 +223,17 @@ export const COURT_PRICING: Record<string, CourtPricingConfig> = {
     ],
     workingHours: { startHour: 7, endHour: 24 }, // Корт работает с 7:00 до 00:00 (24:00)
   },
+  [TennisSiteId.REZIDENCYA]: {
+    weekday: [
+      { startHour: 8, endHour: 22, price: 2600 },
+      { startHour: 22, endHour: 23, price: 2200 },
+    ],
+    weekend: [
+      { startHour: 8, endHour: 22, price: 2600 },
+      { startHour: 22, endHour: 23, price: 2200 },
+    ],
+    workingHours: { startHour: 7, endHour: 23 }, // Корт работает с 7:00 до 23:00
+  },
 };
 
 
