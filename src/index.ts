@@ -13,6 +13,7 @@ import {
   TENNIS_COURT_DISTRICTS,
   TENNIS_COURT_IS_CITY,
   TENNIS_COURT_LOCATIONS,
+  TennisSiteId,
 } from './constants/tennis-constants';
 import {
   PADEL_COURT_NAMES,
@@ -598,7 +599,12 @@ function formatSlotsPage(
       links.push(`[Карта](${mapLink})`);
     }
     if (bookingLink) {
-      links.push(`[Забронировать](${bookingLink})`);
+      // Специальный формат для tennis-ru
+      if (siteName === TennisSiteId.TENNIS_RU) {
+        links.push(`[Забронировать в приложении](http://Link.tennis.ru) или [по телефону](tel:+74951505599) +7 495 150-55-99`);
+      } else {
+        links.push(`[Забронировать](${bookingLink})`);
+      }
     }
     
     if (links.length > 0) {

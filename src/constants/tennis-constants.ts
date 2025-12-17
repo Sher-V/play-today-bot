@@ -206,7 +206,7 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.LIGA_TENNIS]: ["south", "east"],
   [TennisSiteId.TENNISTIME]: ["south"],
   [TennisSiteId.REZIDENCYA]: ["moscow-region"],
-  [TennisSiteId.TENNIS_RU]: ["south", "west"]
+  [TennisSiteId.TENNIS_RU]: ["south", "west", "moscow-region"]
 };
 
 /**

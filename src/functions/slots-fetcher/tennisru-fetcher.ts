@@ -37,22 +37,34 @@ interface TennisRuResponse {
 
 /**
  * Форматирует дату для Tennis.ru API (YYYY-MM-DDTHH:mm:ss без timezone)
+ * Использует московское время (UTC+3)
  */
 function formatDateForTennisRu(daysFromNow: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + daysFromNow);
-  // Устанавливаем время в 00:00:00
-  date.setHours(0, 0, 0, 0);
+  const now = new Date();
   
-  // Форматируем вручную без timezone offset (API ожидает формат YYYY-MM-DDTHH:mm:ss)
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
+  // Используем Intl.DateTimeFormat для работы с московским временем
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
   
-  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+  // Получаем текущую дату в московском времени
+  const todayMoscow = formatter.format(now);
+  const [year, month, day] = todayMoscow.split('-').map(Number);
+  
+  // Создаем дату в московском времени (интерпретируем строку как UTC+3)
+  const moscowMidnight = new Date(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00:00+03:00`);
+  
+  // Добавляем дни, работая с UTC timestamp
+  const targetTimestamp = moscowMidnight.getTime() + daysFromNow * 24 * 60 * 60 * 1000;
+  const targetDate = new Date(targetTimestamp);
+  
+  // Форматируем результат в московском времени
+  const resultDate = formatter.format(targetDate);
+  
+  return `${resultDate}T00:00:00`;
 }
 
 /**
@@ -107,8 +119,12 @@ function extractTennisRuFreeSlots(schedule: TennisRuCourtSchedule[], config: Ten
       }
 
       // Парсим дату и время из startTime (формат: "2025-12-19T07:00:00")
-      const startDate = new Date(rentInfo.startTime);
-      const finishDate = new Date(rentInfo.finishTime);
+      // API возвращает время в московском времени, добавляем +03:00 для корректной интерпретации
+      const startTimeWithTz = rentInfo.startTime + '+03:00';
+      const finishTimeWithTz = rentInfo.finishTime + '+03:00';
+      
+      const startDate = new Date(startTimeWithTz);
+      const finishDate = new Date(finishTimeWithTz);
       
       // Проверяем, что даты валидны
       if (isNaN(startDate.getTime()) || isNaN(finishDate.getTime())) {
@@ -119,9 +135,9 @@ function extractTennisRuFreeSlots(schedule: TennisRuCourtSchedule[], config: Ten
       const durationMs = finishDate.getTime() - startDate.getTime();
       const durationMinutes = Math.round(durationMs / (1000 * 60));
       
-      // Форматируем дату (YYYY-MM-DD) и время (HH:MM)
-      const dateStr = startDate.toISOString().split('T')[0];
-      const timeStr = startDate.toISOString().split('T')[1].substring(0, 5);
+      // Форматируем дату и время в московском времени для вывода
+      const dateStr = startDate.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+      const timeStr = startDate.toLocaleTimeString('en-GB', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' });
       const dateTimeStr = `${dateStr} ${timeStr}`;
 
       const slot: Slot = {
