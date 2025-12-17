@@ -62,6 +62,16 @@ export interface Tennis77Config {
   roomNames?: Record<number, string>;  // Маппинг ID корта -> название (опционально)
 }
 
+// Конфигурация для Tennis.ru API (prilt.tennis.ru)
+export interface TennisRuConfig {
+  name: string;           // Название площадки
+  clubId: string;         // ID клуба (UUID)
+  authToken: string;      // Basic auth токен
+  daysAhead?: number;     // На сколько дней вперёд (по умолчанию 14)
+  courtIds?: string[];    // Список ID кортов для фильтрации (опционально, если не задан - берутся все)
+  courtNames?: Record<string, string>;  // Маппинг courtId -> название корта (опционально)
+}
+
 // ⬇️ КОНФИГУРАЦИИ ПЛОЩАДОК ⬇️
 export const SITE_CONFIGS: SiteConfig[] = [
   {
@@ -517,6 +527,27 @@ export const TENNIS77_CONFIGS: Tennis77Config[] = [
     daysAhead: 14,
     cookie: "PHPSESSID=cdc4iar48qd67r2pc1729ulpla; _csrf=a4393f90f357b9f5c15e5cdd393e6f2d0aaa792c95e0c726e31d9ad16ad810ffa%3A2%3A%7Bi%3A0%3Bs%3A5%3A%22_csrf%22%3Bi%3A1%3Bs%3A32%3A%22Ako_u2HvQj_lG-MM0M94_qw76zvLWfSZ%22%3B%7D",
     referer: "https://tennis77.s20.online/common/10/online-schedule?branch=10&locale=ru&pc=59CD90&crm=https://tennis77.s20.online&token=&appKey=07973e99796377e6f5421a4bc379696e"
+  },
+];
+
+// ⬇️ КОНФИГУРАЦИИ TENNIS.RU (prilt.tennis.ru) ⬇️
+export const TENNIS_RU_CONFIGS: TennisRuConfig[] = [
+  {
+    name: TennisSiteId.TENNIS_RU,
+    clubId: "d4fc8381-e486-11ea-80c3-ac1f6bb3f7d3",
+    authToken: "V2Vic2VydmljZTpyaGV1anZkaGZ1Yg==",
+    daysAhead: 14,
+    courtIds: [
+      "39df27c8-eb55-11e9-9ab5-382c4a64b65a",
+      "4f0b42a8-eb55-11e9-9ab5-382c4a64b65a",
+      "58234368-eb55-11e9-9ab5-382c4a64b65a",
+      "05e09479-574c-11ec-80d6-ac1f6bb3f7d2",
+      "c3eae3fc-87b6-11e5-a889-382c4a64b65a",
+      "2a518b48-8e3e-11e5-a934-382c4a64b65a",
+      "33e088c0-8e3e-11e5-a934-382c4a64b65a",
+      "3bfc30f0-8e3e-11e5-a934-382c4a64b65a",
+      "710efc8a-797d-11ee-80c3-ac1f6bea5f2d"
+    ]
   },
 ];
 

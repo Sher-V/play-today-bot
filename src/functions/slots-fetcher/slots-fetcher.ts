@@ -13,6 +13,7 @@ import {
   MOYKLASS_CONFIGS,
   FINDSPORT_CONFIGS,
   TENNIS77_CONFIGS,
+  TENNIS_RU_CONFIGS,
   API_URL
 } from '../../constants/slots-constants';
 import { fetchYClientsSlotsForSite } from './yclients-fetcher';
@@ -20,6 +21,7 @@ import { fetchVivaCrmSlotsForSite } from './vivacrm-fetcher';
 import { fetchMoyKlassSlotsForSite } from './moyklass-fetcher';
 import { fetchFindSportSlotsForSite } from './findsport-fetcher';
 import { fetchTennis77SlotsForSite } from './tennis77-fetcher';
+import { fetchTennisRuSlotsForSite } from './tennisru-fetcher';
 import { getDayTimestamp } from '../../utils/date-utils';
 import { SportType, type Sport } from '../../constants/sport-constants';
 import { getCourtWorkingHours } from '../../utils/config-utils';
@@ -519,6 +521,20 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
     try {
       console.log(`Fetching slots for: ${config.name} (tennis77.s20.online)`);
       const siteSlots = await fetchTennis77SlotsForSite(config);
+      // Фильтруем по часам работы корта
+      result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
+      console.log(`✅ Successfully fetched ${config.name}`);
+    } catch (error) {
+      console.error(`Error fetching ${config.name}:`, error);
+      result.sites[config.name] = {};
+    }
+  }
+  
+  // Tennis.ru
+  for (const config of TENNIS_RU_CONFIGS) {
+    try {
+      console.log(`Fetching slots for: ${config.name} (prilt.tennis.ru)`);
+      const siteSlots = await fetchTennisRuSlotsForSite(config);
       // Фильтруем по часам работы корта
       result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
