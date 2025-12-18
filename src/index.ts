@@ -2,6 +2,7 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Storage } from '@google-cloud/storage';
+import { Firestore } from '@google-cloud/firestore';
 import * as fs from 'fs';
 import * as path from 'path';
 import { trackButtonClick, generateSessionId, parseButtonType } from './analytics';
@@ -170,15 +171,64 @@ setInterval(() => {
   processedQueries.clear();
 }, 300000);
 
-// Временное хранилище пользователей (в памяти)
-// ⚠️ Важно: для production нужно использовать Firestore или другую БД,
-// так как Cloud Functions не сохраняет состояние между вызовами
+// Интерфейс профиля пользователя
 interface UserProfile {
   name?: string;
   level?: string;
   districts?: string[];
+  favorites?: string[]; // Массив ID избранных кортов
+  updatedAt?: Date;
 }
-const users = new Map<number, UserProfile>();
+
+// Инициализация Firestore
+const firestore = new Firestore();
+
+// Коллекция пользователей в Firestore
+const USERS_COLLECTION = 'users';
+
+/**
+ * Получает профиль пользователя из Firestore
+ */
+async function getUserProfile(userId: number): Promise<UserProfile | null> {
+  try {
+    const userDoc = await firestore.collection(USERS_COLLECTION).doc(userId.toString()).get();
+    if (!userDoc.exists) {
+      return null;
+    }
+    return userDoc.data() as UserProfile;
+  } catch (error) {
+    console.error(`Ошибка получения профиля пользователя ${userId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Сохраняет профиль пользователя в Firestore
+ */
+async function saveUserProfile(userId: number, profile: UserProfile): Promise<boolean> {
+  try {
+    profile.updatedAt = new Date();
+    await firestore.collection(USERS_COLLECTION).doc(userId.toString()).set(profile, { merge: true });
+    return true;
+  } catch (error) {
+    console.error(`Ошибка сохранения профиля пользователя ${userId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Обновляет избранные корты пользователя
+ */
+async function updateUserFavorites(userId: number, favorites: string[]): Promise<boolean> {
+  try {
+    const profile = await getUserProfile(userId) || {};
+    profile.favorites = favorites;
+    return await saveUserProfile(userId, profile);
+  } catch (error) {
+    console.error(`Ошибка обновления избранных кортов для пользователя ${userId}:`, error);
+    return false;
+  }
+}
 
 // Опции районов
 const districtOptions = [
@@ -384,17 +434,31 @@ function filterSlotsByTime(
 
 /**
  * Сортирует слоты по приоритету:
- * 1. Сначала корты с метро
- * 2. В конце корты из moscow-region
+ * 1. Сначала избранные корты (если переданы)
+ * 2. Затем корты с метро
+ * 3. В конце корты из moscow-region
  */
 function sortSlotsByPriority(
   siteSlots: { siteName: string; slots: Slot[] }[],
-  sport: Sport
+  sport: Sport,
+  favoriteCourts: string[] = []
 ): { siteName: string; slots: Slot[] }[] {
   const COURT_METRO = sport === SportType.PADEL ? PADEL_COURT_METRO : TENNIS_COURT_METRO;
   const COURT_LOCATIONS = sport === SportType.PADEL ? PADEL_COURT_LOCATIONS : TENNIS_COURT_LOCATIONS;
   
   return [...siteSlots].sort((a, b) => {
+    const aIsFavorite = favoriteCourts.includes(a.siteName);
+    const bIsFavorite = favoriteCourts.includes(b.siteName);
+    
+    // Избранные корты идут первыми
+    if (aIsFavorite && !bIsFavorite) {
+      return -1;
+    }
+    if (!aIsFavorite && bIsFavorite) {
+      return 1;
+    }
+    
+    // Если оба избранные или оба не избранные, применяем обычную сортировку
     const aHasMetro = !!COURT_METRO[a.siteName];
     const bHasMetro = !!COURT_METRO[b.siteName];
     const aIsMoscowRegion = (COURT_LOCATIONS[a.siteName] || []).includes('moscow-region');
@@ -537,6 +601,195 @@ function formatLastUpdatedTime(lastUpdated: string): string {
 }
 
 /**
+ * Форматирует дату в формат "17 дек"
+ */
+function formatDateShort(dateKey: string): string {
+  const date = new Date(dateKey);
+  const day = date.getDate();
+  const months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  return `${day} ${months[date.getMonth()]}`;
+}
+
+/**
+ * Форматирует слоты избранных кортов в новый формат (группировка по кортам)
+ */
+function formatFavoriteCourtsSlots(
+  courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>>,
+  lastUpdated: string | undefined,
+  singleDateStr?: string, // Если указана одна дата, показываем её в заголовке
+  dateRangeStart?: string, // Дата начала диапазона (YYYY-MM-DD) для корректного отображения "ближайшие 3 дня"
+  dateRangeEnd?: string // Дата конца диапазона (YYYY-MM-DD)
+): string {
+  let message = '';
+  
+  // Если указана одна дата, показываем её в заголовке
+  if (singleDateStr) {
+    message = `🎾 *Ниже показаны слоты на ${singleDateStr}*`;
+  } else {
+    // Формируем заголовок с диапазоном дат
+    let dateRangeText = '';
+    
+    // Если передан явный диапазон дат, используем его
+    if (dateRangeStart && dateRangeEnd) {
+      const firstDate = new Date(dateRangeStart);
+      const lastDate = new Date(dateRangeEnd);
+      
+      const firstDay = firstDate.getDate();
+      const firstMonth = firstDate.getMonth();
+      const lastDay = lastDate.getDate();
+      const lastMonth = lastDate.getMonth();
+      
+      const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+      
+      if (firstMonth === lastMonth) {
+        // Один месяц: "18-20 декабря"
+        dateRangeText = `${firstDay}-${lastDay} ${months[firstMonth]}`;
+      } else {
+        // Разные месяцы: "18 декабря - 2 января"
+        dateRangeText = `${firstDay} ${months[firstMonth]} - ${lastDay} ${months[lastMonth]}`;
+      }
+    } else {
+      // Иначе формируем диапазон из фактических дат в данных
+      const allDateKeys = new Set<string>();
+      for (const datesData of courtsData.values()) {
+        for (const { dateKey } of datesData) {
+          allDateKeys.add(dateKey);
+        }
+      }
+      
+      // Сортируем даты
+      const sortedDates = Array.from(allDateKeys).sort();
+      
+      if (sortedDates.length > 0) {
+        const firstDate = new Date(sortedDates[0]);
+        const lastDate = new Date(sortedDates[sortedDates.length - 1]);
+        
+        const firstDay = firstDate.getDate();
+        const firstMonth = firstDate.getMonth();
+        const lastDay = lastDate.getDate();
+        const lastMonth = lastDate.getMonth();
+        
+        const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+        
+        if (firstMonth === lastMonth) {
+          // Один месяц: "18-20 декабря"
+          dateRangeText = `${firstDay}-${lastDay} ${months[firstMonth]}`;
+        } else {
+          // Разные месяцы: "18 декабря - 2 января"
+          dateRangeText = `${firstDay} ${months[firstMonth]} - ${lastDay} ${months[lastMonth]}`;
+        }
+      }
+    }
+    
+    message = `🎾 *Ниже показаны слоты на ближайшие 3 дня (${dateRangeText})*`;
+  }
+  
+  message += '\n\n';
+  
+  // Итерируемся по кортам
+  for (const [siteName, datesData] of courtsData.entries()) {
+    const displayName = TENNIS_COURT_NAMES[siteName] || siteName;
+    const bookingLink = TENNIS_COURT_LINKS[siteName];
+    const mapLink = TENNIS_COURT_MAPS[siteName];
+    
+    // Формируем строку со ссылками
+    const links: string[] = [];
+    if (mapLink) {
+      links.push(`[Карта](${mapLink})`);
+    }
+    if (bookingLink) {
+      // Специальный формат для tennis-ru
+      if (siteName === TennisSiteId.TENNIS_RU) {
+        links.push(`[Забронировать в приложении](http://Link.tennis.ru) или [по телефону](tel:+74951505599) +7 495 150-55-99`);
+      } else {
+        links.push(`[Забронировать](${bookingLink})`);
+      }
+    }
+    
+    // Формируем название корта со ссылками
+    if (links.length > 0) {
+      message += `📍 *${displayName}* — ${links.join(' | ')}\n`;
+    } else {
+      message += `📍 *${displayName}*\n`;
+    }
+    
+    // Для каждой даты собираем времена и цены
+    for (const { date, dateKey, slots } of datesData) {
+      if (slots.length === 0) continue;
+      
+      const dateStr = formatDateShort(dateKey);
+      
+      // Собираем все уникальные времена и цены для этой даты
+      const times: string[] = [];
+      const prices: number[] = [];
+      
+      for (const slot of slots) {
+        const time = slot.time;
+        // Пытаемся получить цену из конфигурации
+        const [hours, minutes] = time.split(':').map(Number);
+        const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+        const configPrice = getCourtPrice(siteName, dateTimeStr);
+        const price = configPrice !== null ? configPrice : (slot.price || 0);
+        
+        if (!times.includes(time)) {
+          times.push(time);
+        }
+        if (price > 0 && !prices.includes(price)) {
+          prices.push(price);
+        }
+      }
+      
+      // Сортируем времена
+      const sortedTimes = times.sort((a, b) => {
+        const [hoursA, minsA] = a.split(':').map(Number);
+        const [hoursB, minsB] = b.split(':').map(Number);
+        if (hoursA !== hoursB) return hoursA - hoursB;
+        return minsA - minsB;
+      });
+      
+      // Сортируем цены
+      prices.sort((a, b) => a - b);
+      
+      // Формируем строку времени
+      let timeStr: string;
+      if (sortedTimes.length === 1) {
+        timeStr = sortedTimes[0];
+      } else {
+        // Берем первое и последнее время для диапазона
+        timeStr = `${sortedTimes[0]} · ${sortedTimes[sortedTimes.length - 1]}`;
+      }
+      
+      // Формируем строку цены
+      let priceStr: string;
+      if (prices.length === 0) {
+        priceStr = '';
+      } else if (prices.length === 1) {
+        priceStr = ` — ${prices[0]} ₽`;
+      } else {
+        // Диапазон цен
+        const minPrice = prices[0];
+        const maxPrice = prices[prices.length - 1];
+        priceStr = ` — ${minPrice}–${maxPrice} ₽`;
+      }
+      
+      message += `${dateStr} — ${timeStr}${priceStr}\n`;
+    }
+    
+    message += '\n';
+  }
+  
+  // Добавляем информацию об обновлении в конец сообщения
+  if (lastUpdated) {
+    const formattedTime = formatLastUpdatedTime(lastUpdated);
+    if (formattedTime) {
+      message += `\n\nℹ️ Данные актуальны на ${formattedTime} (МСК) и обновляются каждые 20 минут.`;
+    }
+  }
+  
+  return message.trimEnd();
+}
+
+/**
  * Форматирует одну страницу слотов для отображения пользователю
  */
 function formatSlotsPage(
@@ -546,7 +799,8 @@ function formatSlotsPage(
   page: number = 1,
   pageSize: number = 5,
   lastUpdated: string | undefined,
-  dateKey: string // Дата в формате YYYY-MM-DD для расчета цен
+  dateKey: string, // Дата в формате YYYY-MM-DD для расчета цен
+  favoriteCourts: string[] = [] // Массив ID избранных кортов
 ): string {
   if (siteSlots.length === 0) {
     const emoji = sport === SportType.PADEL ? '🏓' : '🎾';
@@ -575,6 +829,7 @@ function formatSlotsPage(
     const isCity = COURT_IS_CITY[siteName] || false;
     const bookingLink = COURT_LINKS[siteName];
     const mapLink = COURT_MAPS[siteName];
+    const isFavorite = favoriteCourts.includes(siteName);
     
     // Формируем название с метро/городом и округом в скобочках
     let nameWithMetro = displayName;
@@ -591,6 +846,11 @@ function formatSlotsPage(
       nameWithMetro = `${displayName} (${metroPrefix}${metro})`;
     } else if (district) {
       nameWithMetro = `${displayName} (${district})`;
+    }
+    
+    // Добавляем звездочку к избранным кортам
+    if (isFavorite) {
+      nameWithMetro = `⭐ ${nameWithMetro}`;
     }
     
     // Формируем строку со ссылками
@@ -941,6 +1201,53 @@ function getTimeKeyboard(selectedTimeSlots: string[], availableOptions: typeof t
 }
 
 /**
+ * Получает список всех кортов (только теннис) с их ID, названиями и типом спорта
+ */
+function getAllCourts(): Array<{ id: string; name: string; sport: Sport }> {
+  const tennisCourts = Object.entries(TENNIS_COURT_NAMES).map(([id, name]) => ({
+    id,
+    name,
+    sport: SportType.TENNIS as Sport
+  }));
+  
+  return tennisCourts.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+}
+
+/**
+ * Генерация клавиатуры для выбора избранных кортов
+ */
+function getFavoriteCourtsKeyboard(selectedCourtIds: string[]): TelegramBot.InlineKeyboardButton[][] {
+  const allCourts = getAllCourts();
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  
+  // Разбиваем корты на строки (по 1 корту в строке для читаемости)
+  for (const court of allCourts) {
+    const emoji = court.sport === SportType.PADEL ? '🏓' : '🎾';
+    const isSelected = selectedCourtIds.includes(court.id);
+    buttons.push([{
+      text: isSelected ? `✅ ${emoji} ${court.name}` : `${emoji} ${court.name}`,
+      callback_data: `favorite_court_${court.id}`
+    }]);
+  }
+  
+  // Добавляем кнопки "Очистить" и "Готово"
+  // Кнопка "Очистить" показывается только если есть выбранные корты
+  // Кнопка "Готово" показывается всегда, чтобы можно было сохранить пустой список
+  if (selectedCourtIds.length > 0) {
+    buttons.push([
+      { text: '🗑 Очистить', callback_data: 'favorite_courts_clear' },
+      { text: '✔️ Готово', callback_data: 'favorite_courts_done' }
+    ]);
+  } else {
+    buttons.push([
+      { text: '✔️ Готово', callback_data: 'favorite_courts_done' }
+    ]);
+  }
+  
+  return buttons;
+}
+
+/**
  * Генерация клавиатуры с пагинацией и кнопкой "Выбрать другую дату"
  */
 function getPaginationKeyboard(
@@ -1003,7 +1310,7 @@ async function handleStart(msg: TelegramBot.Message) {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }],
         [{ text: '🏓 Найти корт (падел)' }],
-        [{ text: '💬 Чат участников' }],
+        [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }],
       ],
       resize_keyboard: true
     }
@@ -1075,9 +1382,9 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Проверяем, это ответ на вопрос "Как к тебе обращаться?"
   if (msg.reply_to_message?.text === USER_TEXTS.ASK_NAME && userId && text) {
     // Сохраняем имя пользователя
-    const profile = users.get(userId) || {};
+    const profile = await getUserProfile(userId) || {};
     profile.name = text;
-    users.set(userId, profile);
+    await saveUserProfile(userId, profile);
 
     // Задаём вопрос об уровне игры
     await getBot().sendMessage(chatId, USER_TEXTS.LEVELS_EXPLANATION(text), {
@@ -1155,6 +1462,163 @@ async function handleMessage(msg: TelegramBot.Message) {
           ]
         }
       });
+      break;
+    case '⭐ Избранные корты':
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'favorites',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      // Проверяем, есть ли у пользователя избранные корты
+      const userProfile = userId ? await getUserProfile(userId) : null;
+      const favoriteCourts = userProfile?.favorites || [];
+      
+      if (favoriteCourts.length === 0) {
+        // Нет избранных кортов - показываем предложение добавить
+        await getBot().sendMessage(
+          chatId,
+          'Избранные корты — твой быстрый доступ к любимым площадкам.\n\n' +
+          '• в 1 клик будешь видеть ближайшие слоты только по ним\n' +
+          '• в общем поиске они будут вверху списка\n\n' +
+          'Добавим?',
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '➕ Выбрать избранные', callback_data: 'favorites_select' }],
+                [{ text: '◀️ Назад', callback_data: 'action_home' }]
+              ]
+            }
+          }
+        );
+      } else {
+        // Есть избранные корты - сразу показываем ближайшие слоты
+        await getBot().sendMessage(
+          chatId,
+          '🔍 Ищу ближайшие свободные слоты по твоим избранным кортам...'
+        );
+        
+        // Получаем даты на 3 дня вперед
+        const moscowToday = getMoscowTime();
+        moscowToday.setHours(0, 0, 0, 0);
+        const dates: string[] = [];
+        const dateStrs: string[] = [];
+        
+        for (let i = 0; i < 3; i++) {
+          const date = new Date(moscowToday);
+          date.setDate(date.getDate() + i);
+          const dateKey = formatMoscowDateToYYYYMMDD(date);
+          const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+          dates.push(dateKey);
+          dateStrs.push(dateStr);
+        }
+        
+        // Собираем слоты по кортам (группировка по кортам, а не по датам)
+        const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
+        let lastUpdatedTime: string | undefined = undefined;
+        
+        for (let i = 0; i < dates.length; i++) {
+          const dateKey = dates[i];
+          const dateStr = dateStrs[i];
+          
+          const slotsData = await loadSlots(SportType.TENNIS, dateKey);
+          if (slotsData) {
+            // Сохраняем время обновления (берем самое свежее)
+            if (slotsData.lastUpdated && (!lastUpdatedTime || slotsData.lastUpdated > lastUpdatedTime)) {
+              lastUpdatedTime = slotsData.lastUpdated;
+            }
+            
+            // Получаем слоты на дату
+            let siteSlots = getSlotsByDate(slotsData, dateKey);
+            
+            // Фильтруем только по избранным кортам
+            siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
+            
+            // Добавляем слоты в структуру по кортам
+            for (const { siteName, slots } of siteSlots) {
+              if (!courtsData.has(siteName)) {
+                courtsData.set(siteName, []);
+              }
+              courtsData.get(siteName)!.push({
+                date: dateStr,
+                dateKey: dateKey,
+                slots: slots
+              });
+            }
+          }
+        }
+        
+        if (courtsData.size === 0) {
+          await getBot().sendMessage(
+            chatId,
+            '⭐ На ближайшие 3 дня по твоим избранным кортам свободных слотов не найдено.',
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+                  [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+                  [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
+                ]
+              }
+            }
+          );
+        } else {
+          // Сортируем корты по приоритету
+          const sortedCourts = Array.from(courtsData.entries()).sort(([siteNameA], [siteNameB]) => {
+            const aHasMetro = !!TENNIS_COURT_METRO[siteNameA];
+            const bHasMetro = !!TENNIS_COURT_METRO[siteNameB];
+            const aIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameA] || []).includes('moscow-region');
+            const bIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameB] || []).includes('moscow-region');
+            
+            if (aHasMetro && !bHasMetro) return -1;
+            if (!aHasMetro && bHasMetro) return 1;
+            if (aIsMoscowRegion && !bIsMoscowRegion) return 1;
+            if (!aIsMoscowRegion && bIsMoscowRegion) return -1;
+            return 0;
+          });
+          
+          const sortedCourtsData = new Map(sortedCourts);
+          // Передаем явный диапазон дат для корректного отображения "ближайшие 3 дня"
+          const message = formatFavoriteCourtsSlots(
+            sortedCourtsData, 
+            lastUpdatedTime,
+            undefined, // singleDateStr
+            dates[0], // dateRangeStart - первая дата диапазона (сегодня)
+            dates[dates.length - 1] // dateRangeEnd - последняя дата диапазона (через 2 дня от сегодня)
+          );
+          
+          await getBot().sendMessage(
+            chatId,
+            message,
+            {
+              parse_mode: 'Markdown',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+                  [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+                  [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
+                ]
+              }
+            }
+          );
+        }
+      }
       break;
     case '💬 Чат участников':
       // Отслеживаем клик на текстовую кнопку
@@ -1248,10 +1712,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       'level_advanced': '🏆 Сильный любитель — регулярные тренировки / турниры'
     };
 
-    const profile = users.get(userId) || {};
+    const profile = await getUserProfile(userId) || {};
     profile.level = data;
     profile.districts = []; // Инициализируем пустой выбор районов
-    users.set(userId, profile);
+    await saveUserProfile(userId, profile);
 
     const levelText = levels[data] || data;
     
@@ -1292,6 +1756,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         return;
       }
       
+      // Получаем избранные корты пользователя
+      const userProfile = await getUserProfile(userId);
+      const favoriteCourts = userProfile?.favorites || [];
+      
       // Получаем слоты на выбранную дату
       const siteSlots = getSlotsByDate(slotsData, searchState.date);
       
@@ -1301,8 +1769,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       // Фильтруем по времени
       const filteredByTime = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
       
-      // Сортируем по приоритету
-      const filteredSlots = sortSlotsByPriority(filteredByTime, searchState.sport);
+      // Сортируем по приоритету (избранные корты первыми)
+      const filteredSlots = sortSlotsByPriority(filteredByTime, searchState.sport, favoriteCourts);
       
       // Форматируем и отправляем сообщение
       const emoji = searchState.sport === SportType.PADEL ? '🏓' : '🎾';
@@ -1318,12 +1786,17 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         const hasSpecificTime = !searchState.selectedTimeSlots.includes('any');
         
         if (hasSpecificLocation || hasSpecificTime) {
+          // Получаем избранные корты пользователя
+          const userProfile = await getUserProfile(userId);
+          const favoriteCourts = userProfile?.favorites || [];
+          
           // Пробуем показать все варианты без фильтров
           const allSlots = getSlotsByDate(slotsData, searchState.date);
           const allSlotsWithoutLocationFilter = filterSlotsByLocation(allSlots, ['any'], searchState.sport);
           const allSlotsWithoutFilters = sortSlotsByPriority(
             filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']),
-            searchState.sport
+            searchState.sport,
+            favoriteCourts
           );
           
           if (allSlotsWithoutFilters.length > 0) {
@@ -1405,7 +1878,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             1,
             pageSize,
             slotsData.lastUpdated,
-            searchState.date
+            searchState.date,
+            favoriteCourts
           );
           
           const messageId = query.message?.message_id;
@@ -1532,7 +2006,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Обработка выбора районов
   if (data?.startsWith('district_')) {
-    const profile = users.get(userId) || {};
+    const profile = await getUserProfile(userId) || {};
     const selected = profile.districts || [];
     const districtId = data.replace('district_', '');
 
@@ -1586,7 +2060,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
     }
 
-    users.set(userId, profile);
+    await saveUserProfile(userId, profile);
 
     // Обновляем клавиатуру
     await safeEditMessageReplyMarkup(
@@ -1695,6 +2169,245 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     } else {
       await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_NO_MESSAGE_ID });
     }
+    return;
+  }
+
+  // Обработка выбора даты для избранных кортов (custom - показать календарь)
+  if (data === 'favorites_date_custom') {
+    const availableDates = getAvailableDates();
+    if (availableDates.length === 0) {
+      const messageId = query.message?.message_id;
+      if (messageId) {
+        await safeEditMessageText(USER_TEXTS.ERROR_NO_DATES, {
+          chat_id: chatId,
+          message_id: messageId
+        });
+      } else {
+        await getBot().sendMessage(chatId, USER_TEXTS.ERROR_NO_DATES);
+      }
+      return;
+    }
+    
+    // Показываем первые 7 дней (pageOffset = 0)
+    const pageOffset = 0;
+    const datesToShow = getDatesForWeekRange(pageOffset);
+    
+    // Добавляем callback_data для избранных кортов
+    const dateButtons = datesToShow.map(date => ({
+      text: formatDateButton(date),
+      callback_data: `favorites_date_pick_${date}`
+    }));
+    
+    // Распределяем кнопки по рядам (по 3 кнопки в ряд)
+    const rows: TelegramBot.InlineKeyboardButton[][] = [];
+    const buttonsPerRow = 3;
+    
+    for (let i = 0; i < dateButtons.length; i += buttonsPerRow) {
+      rows.push(dateButtons.slice(i, i + buttonsPerRow));
+    }
+    
+    // Добавляем кнопки навигации для следующей недели
+    const nextWeekDates = getDatesForWeekRange(pageOffset + 1);
+    if (nextWeekDates.length > 0) {
+      rows.push([{
+        text: 'Следующая неделя ▶️',
+        callback_data: `favorites_week_next_${pageOffset}`
+      }]);
+    }
+    
+    // Редактируем сообщение с выбором даты
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      try {
+        await safeEditMessageText('📅 Выберите дату для просмотра слотов по избранным кортам:', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: rows
+          }
+        });
+      } catch (error) {
+        console.error('Error editing message, sending new one:', error);
+        await getBot().sendMessage(chatId, '📅 Выберите дату для просмотра слотов по избранным кортам:', {
+          reply_markup: {
+            inline_keyboard: rows
+          }
+        });
+      }
+    } else {
+      await getBot().sendMessage(chatId, '📅 Выберите дату для просмотра слотов по избранным кортам:', {
+        reply_markup: {
+          inline_keyboard: rows
+        }
+      });
+    }
+    return;
+  }
+
+  // Обработка навигации по неделям для избранных кортов
+  if (data?.startsWith('favorites_week_prev_') || data?.startsWith('favorites_week_next_')) {
+    const isPrev = data.startsWith('favorites_week_prev_');
+    const prefix = isPrev ? 'favorites_week_prev_' : 'favorites_week_next_';
+    const rest = data.replace(prefix, '');
+    const currentPageOffset = parseInt(rest) || 0;
+    
+    const newPageOffset = isPrev ? currentPageOffset - 1 : currentPageOffset + 1;
+    
+    const datesToShow = getDatesForWeekRange(newPageOffset);
+    
+    // Добавляем callback_data для избранных кортов
+    const dateButtons = datesToShow.map(date => ({
+      text: formatDateButton(date),
+      callback_data: `favorites_date_pick_${date}`
+    }));
+    
+    // Распределяем кнопки по рядам (по 3 кнопки в ряд)
+    const rows: TelegramBot.InlineKeyboardButton[][] = [];
+    const buttonsPerRow = 3;
+    
+    for (let i = 0; i < dateButtons.length; i += buttonsPerRow) {
+      rows.push(dateButtons.slice(i, i + buttonsPerRow));
+    }
+    
+    // Добавляем кнопки навигации
+    if (newPageOffset === 0) {
+      // Первая страница - только кнопка "Следующая неделя"
+      rows.push([{
+        text: 'Следующая неделя ▶️',
+        callback_data: `favorites_week_next_${newPageOffset}`
+      }]);
+    } else if (newPageOffset === 1) {
+      // Вторая страница - только кнопка "Предыдущая неделя"
+      rows.push([{
+        text: '◀️ Предыдущая неделя',
+        callback_data: `favorites_week_prev_${newPageOffset}`
+      }]);
+    }
+    
+    // Редактируем сообщение с выбором даты
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      try {
+        await safeEditMessageText('📅 Выберите дату для просмотра слотов по избранным кортам:', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: rows
+          }
+        });
+        await safeAnswerCallbackQuery(query.id);
+      } catch (error) {
+        console.error('Error editing message:', error);
+        await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_UPDATE_MESSAGE });
+      }
+    } else {
+      await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_NO_MESSAGE_ID });
+    }
+    return;
+  }
+
+  // Обработка выбора конкретной даты для избранных кортов
+  if (data?.startsWith('favorites_date_pick_')) {
+    const dateKey = data.replace('favorites_date_pick_', '');
+    const date = new Date(dateKey);
+    const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+    
+    // Получаем избранные корты пользователя
+    const userProfile = await getUserProfile(userId) || {};
+    const favoriteCourts = userProfile.favorites || [];
+    
+    if (favoriteCourts.length === 0) {
+      await safeAnswerCallbackQuery(query.id, { text: 'У вас нет избранных кортов' });
+      return;
+    }
+    
+    // Показываем сообщение о загрузке
+    await safeEditMessageText(
+      `🔍 Ищу свободные слоты по твоим избранным кортам на ${dateStr}...`,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id
+      }
+    );
+    
+    // Загружаем слоты для выбранной даты
+    const slotsData = await loadSlots(SportType.TENNIS, dateKey);
+    
+    if (!slotsData) {
+      await safeEditMessageText(
+        `❌ Не удалось загрузить слоты на ${dateStr}.`,
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    // Получаем слоты на дату
+    let siteSlots = getSlotsByDate(slotsData, dateKey);
+    
+    // Фильтруем только по избранным кортам
+    siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
+    
+    // Сортируем по приоритету (избранные корты уже отфильтрованы, но сортировка все равно нужна для метро/региона)
+    siteSlots = sortSlotsByPriority(siteSlots, SportType.TENNIS, favoriteCourts);
+    
+    if (siteSlots.length === 0) {
+      await safeEditMessageText(
+        `⭐ На ${dateStr} по твоим избранным кортам свободных слотов не найдено.`,
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    // Группируем слоты по кортам для форматирования
+    const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
+    for (const { siteName, slots } of siteSlots) {
+      courtsData.set(siteName, [{
+        date: dateStr,
+        dateKey: dateKey,
+        slots: slots
+      }]);
+    }
+    
+    // Форматируем сообщение для одной даты
+    const message = formatFavoriteCourtsSlots(courtsData, slotsData.lastUpdated, dateStr);
+    
+    await safeEditMessageText(
+      message,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+            [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+            [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+          ]
+        }
+      }
+    );
     return;
   }
 
@@ -2001,6 +2714,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       console.error('Error tracking pagination click:', err);
     });
     
+    // Получаем избранные корты пользователя
+    const userProfile = await getUserProfile(userId);
+    const favoriteCourts = userProfile?.favorites || [];
+    
     // Обновляем текущую страницу
     searchState.currentPage = page;
     searchStates.set(userId, searchState);
@@ -2014,7 +2731,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       page,
       pageSize,
       searchState.lastUpdated,
-      searchState.date
+      searchState.date,
+      favoriteCourts
     );
     
     // Обновляем сообщение
@@ -2042,6 +2760,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     
+    // Получаем избранные корты пользователя
+    const userProfile = await getUserProfile(userId);
+    const favoriteCourts = userProfile?.favorites || [];
+    
     const pageSize = 5;
     const totalPages = searchState.totalPages || 1;
     const currentPage = 1;
@@ -2054,7 +2776,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       currentPage,
       pageSize,
       searchState.lastUpdated,
-      searchState.date
+      searchState.date,
+      favoriteCourts
     );
     
     const messageId = query.message?.message_id;
@@ -2120,7 +2843,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Кнопка "Вернуться на главную"
   if (data === 'action_home') {
-    const profile = users.get(userId);
+    const profile = await getUserProfile(userId);
     const userName = profile?.name || query.from.first_name;
     
     await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
@@ -2129,12 +2852,402 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }],
           [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '💬 Чат участников' }]
+          [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }]
           // [{ text: '👤 Профиль' }]
         ],
         resize_keyboard: true
       }
     });
+    return;
+  }
+
+  // Обработка выбора избранных кортов
+  if (data === 'favorites_select') {
+    const userProfile = await getUserProfile(userId) || {};
+    const selectedCourts = userProfile.favorites || [];
+    
+    await safeEditMessageText(
+      'Отметьте избранные корты',
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: getFavoriteCourtsKeyboard(selectedCourts)
+        }
+      }
+    );
+    return;
+  }
+
+  // Обработка очистки всех выбранных кортов
+  if (data === 'favorite_courts_clear') {
+    // Очищаем все избранные корты
+    await updateUserFavorites(userId, []);
+    
+    // Обновляем клавиатуру
+    await safeEditMessageReplyMarkup(
+      { inline_keyboard: getFavoriteCourtsKeyboard([]) },
+      { chat_id: chatId, message_id: query.message?.message_id }
+    );
+    return;
+  }
+
+  // Обработка переключения выбора корта в избранное
+  if (data?.startsWith('favorite_court_')) {
+    const courtId = data.replace('favorite_court_', '');
+    const userProfile = await getUserProfile(userId) || {};
+    const selectedCourts = userProfile.favorites || [];
+    
+    // Переключаем выбор корта
+    let newFavorites: string[];
+    if (selectedCourts.includes(courtId)) {
+      // Убираем из избранных
+      newFavorites = selectedCourts.filter(id => id !== courtId);
+    } else {
+      // Добавляем в избранные
+      newFavorites = [...selectedCourts, courtId];
+    }
+    
+    // Сохраняем в Firestore
+    await updateUserFavorites(userId, newFavorites);
+    
+    // Обновляем клавиатуру
+    await safeEditMessageReplyMarkup(
+      { inline_keyboard: getFavoriteCourtsKeyboard(newFavorites) },
+      { chat_id: chatId, message_id: query.message?.message_id }
+    );
+    return;
+  }
+
+  // Обработка завершения выбора избранных кортов
+  if (data === 'favorite_courts_done') {
+    const userProfile = await getUserProfile(userId) || {};
+    const selectedCourts = userProfile.favorites || [];
+    
+    // Если не выбрано ни одного корта
+    if (selectedCourts.length === 0) {
+      await safeAnswerCallbackQuery(query.id);
+      await safeEditMessageText(
+        'У вас нет избранных кортов, если хотите - выберите, пожалуйста',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '➕ Выбрать избранные', callback_data: 'favorites_select' }],
+              [{ text: '◀️ Назад', callback_data: 'action_home' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    
+    // Сохраняем выбор в Firestore
+    const saved = await updateUserFavorites(userId, selectedCourts);
+    if (!saved) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Ошибка сохранения. Попробуйте еще раз.' });
+      return;
+    }
+    
+    // Отвечаем на callback query перед редактированием
+    await safeAnswerCallbackQuery(query.id);
+    
+    // Показываем сообщение о загрузке
+    await safeEditMessageText(
+      '🔍 Ищу ближайшие свободные слоты по твоим избранным кортам...',
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id
+      }
+    );
+    
+    // Получаем даты на 3 дня вперед
+    const moscowToday = getMoscowTime();
+    moscowToday.setHours(0, 0, 0, 0);
+    const dates: string[] = [];
+    const dateStrs: string[] = [];
+    
+    for (let i = 0; i < 3; i++) {
+      const date = new Date(moscowToday);
+      date.setDate(date.getDate() + i);
+      const dateKey = formatMoscowDateToYYYYMMDD(date);
+      const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+      dates.push(dateKey);
+      dateStrs.push(dateStr);
+    }
+    
+    // Собираем слоты по кортам (группировка по кортам, а не по датам)
+    const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
+    let lastUpdatedTime: string | undefined = undefined;
+    
+    for (let i = 0; i < dates.length; i++) {
+      const dateKey = dates[i];
+      const dateStr = dateStrs[i];
+      
+      const slotsData = await loadSlots(SportType.TENNIS, dateKey);
+      if (slotsData) {
+        // Сохраняем время обновления (берем самое свежее)
+        if (slotsData.lastUpdated && (!lastUpdatedTime || slotsData.lastUpdated > lastUpdatedTime)) {
+          lastUpdatedTime = slotsData.lastUpdated;
+        }
+        
+        // Получаем слоты на дату
+        let siteSlots = getSlotsByDate(slotsData, dateKey);
+        
+        // Фильтруем только по избранным кортам
+        siteSlots = siteSlots.filter(({ siteName }) => selectedCourts.includes(siteName));
+        
+        // Добавляем слоты в структуру по кортам
+        for (const { siteName, slots } of siteSlots) {
+          if (!courtsData.has(siteName)) {
+            courtsData.set(siteName, []);
+          }
+          courtsData.get(siteName)!.push({
+            date: dateStr,
+            dateKey: dateKey,
+            slots: slots
+          });
+        }
+      }
+    }
+    
+    if (courtsData.size === 0) {
+      await safeEditMessageText(
+        '⭐ На ближайшие 3 дня по твоим избранным кортам свободных слотов не найдено.',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+            ]
+          }
+        }
+      );
+    } else {
+      // Сортируем корты по приоритету
+      const sortedCourts = Array.from(courtsData.entries()).sort(([siteNameA], [siteNameB]) => {
+        const aHasMetro = !!TENNIS_COURT_METRO[siteNameA];
+        const bHasMetro = !!TENNIS_COURT_METRO[siteNameB];
+        const aIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameA] || []).includes('moscow-region');
+        const bIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameB] || []).includes('moscow-region');
+        
+        if (aHasMetro && !bHasMetro) return -1;
+        if (!aHasMetro && bHasMetro) return 1;
+        if (aIsMoscowRegion && !bIsMoscowRegion) return 1;
+        if (!aIsMoscowRegion && bIsMoscowRegion) return -1;
+        return 0;
+      });
+      
+      const sortedCourtsData = new Map(sortedCourts);
+      // Передаем явный диапазон дат для корректного отображения "ближайшие 3 дня"
+      const message = formatFavoriteCourtsSlots(
+        sortedCourtsData, 
+        lastUpdatedTime,
+        undefined, // singleDateStr
+        dates[0], // dateRangeStart - первая дата диапазона (сегодня)
+        dates[dates.length - 1] // dateRangeEnd - последняя дата диапазона (через 2 дня от сегодня)
+      );
+      
+      await safeEditMessageText(
+        message,
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+            ]
+          }
+        }
+      );
+    }
+    return;
+  }
+
+  // Обработка просмотра ближайших слотов по избранным кортам
+  if (data === 'favorites_show_slots') {
+    const userProfile = await getUserProfile(userId) || {};
+    const favoriteCourts = userProfile?.favorites || [];
+    
+    if (favoriteCourts.length === 0) {
+      await safeAnswerCallbackQuery(query.id, { text: 'У вас нет избранных кортов' });
+      return;
+    }
+    
+    // Показываем сообщение о загрузке
+    await safeEditMessageText(
+      '🔍 Ищу ближайшие свободные слоты по твоим избранным кортам...',
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id
+      }
+    );
+    
+    // Получаем даты на 3 дня вперед
+    const moscowToday = getMoscowTime();
+    moscowToday.setHours(0, 0, 0, 0);
+    const dates: string[] = [];
+    const dateStrs: string[] = [];
+    
+    for (let i = 0; i < 3; i++) {
+      const date = new Date(moscowToday);
+      date.setDate(date.getDate() + i);
+      const dateKey = formatMoscowDateToYYYYMMDD(date);
+      const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+      dates.push(dateKey);
+      dateStrs.push(dateStr);
+    }
+    
+    // Собираем слоты по кортам (группировка по кортам, а не по датам)
+    const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
+    let lastUpdatedTime: string | undefined = undefined;
+    
+    for (let i = 0; i < dates.length; i++) {
+      const dateKey = dates[i];
+      const dateStr = dateStrs[i];
+      
+      const slotsData = await loadSlots(SportType.TENNIS, dateKey);
+      if (slotsData) {
+        // Сохраняем время обновления (берем самое свежее)
+        if (slotsData.lastUpdated && (!lastUpdatedTime || slotsData.lastUpdated > lastUpdatedTime)) {
+          lastUpdatedTime = slotsData.lastUpdated;
+        }
+        
+        // Получаем слоты на дату
+        let siteSlots = getSlotsByDate(slotsData, dateKey);
+        
+        // Фильтруем только по избранным кортам
+        siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
+        
+        // Добавляем слоты в структуру по кортам
+        for (const { siteName, slots } of siteSlots) {
+          if (!courtsData.has(siteName)) {
+            courtsData.set(siteName, []);
+          }
+          courtsData.get(siteName)!.push({
+            date: dateStr,
+            dateKey: dateKey,
+            slots: slots
+          });
+        }
+      }
+    }
+    
+    if (courtsData.size === 0) {
+      await safeEditMessageText(
+        '⭐ На ближайшие 3 дня по твоим избранным кортам свободных слотов не найдено.',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    // Сортируем корты по приоритету (используем порядок из TENNIS_COURT_NAMES и сортировку по приоритету)
+    // Сначала создаем массив кортов с их приоритетом
+    const sortedCourts = Array.from(courtsData.entries()).sort(([siteNameA], [siteNameB]) => {
+      // Используем функцию сортировки по приоритету
+      const aHasMetro = !!TENNIS_COURT_METRO[siteNameA];
+      const bHasMetro = !!TENNIS_COURT_METRO[siteNameB];
+      const aIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameA] || []).includes('moscow-region');
+      const bIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameB] || []).includes('moscow-region');
+      
+      // Если у корта A есть метро, а у B нет - A идет первым
+      if (aHasMetro && !bHasMetro) return -1;
+      if (!aHasMetro && bHasMetro) return 1;
+      
+      // Если у обоих кортов одинаковое наличие метро, проверяем moscow-region
+      if (aIsMoscowRegion && !bIsMoscowRegion) return 1;
+      if (!aIsMoscowRegion && bIsMoscowRegion) return -1;
+      
+      // В остальных случаях сохраняем исходный порядок
+      return 0;
+    });
+    
+    // Создаем отсортированную Map
+    const sortedCourtsData = new Map(sortedCourts);
+    
+    // Форматируем сообщение с явным указанием диапазона дат (даже если на первую дату нет слотов)
+    const message = formatFavoriteCourtsSlots(
+      sortedCourtsData, 
+      lastUpdatedTime,
+      undefined, // singleDateStr
+      dates[0], // dateRangeStart - первая дата диапазона (сегодня)
+      dates[dates.length - 1] // dateRangeEnd - последняя дата диапазона (через 2 дня от сегодня)
+    );
+    
+      await safeEditMessageText(
+        message,
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: 'favorites_date_custom' }]
+            ]
+          }
+        }
+      );
+    return;
+  }
+
+  // Обработка перехода в основной поиск из избранных
+  if (data === 'favorites_main_search') {
+    await safeEditMessageText(
+      USER_TEXTS.DATE_SELECTION,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📆 Сегодня', callback_data: `date_today_${SportType.TENNIS}` }],
+            [{ text: '📆 Завтра', callback_data: `date_tomorrow_${SportType.TENNIS}` }],
+            [{ text: '🗓 Указать дату', callback_data: `date_custom_${SportType.TENNIS}` }]
+          ]
+        }
+      }
+    );
+    return;
+  }
+
+  // Обработка изменения списка избранных кортов
+  if (data === 'favorites_edit') {
+    const userProfile = await getUserProfile(userId) || {};
+    const selectedCourts = userProfile.favorites || [];
+    
+    await safeEditMessageText(
+      'Отметьте избранные корты',
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: getFavoriteCourtsKeyboard(selectedCourts)
+        }
+      }
+    );
     return;
   }
 
