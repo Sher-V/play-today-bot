@@ -51,7 +51,7 @@ if gcloud scheduler jobs describe $TENNIS_JOB_NAME --location=$REGION &>/dev/nul
         --uri="$FUNCTION_URL" \
         --http-method=POST \
         --message-body='{"sport":"tennis"}' \
-        --headers="Content-Type=application/json" \
+        --update-headers="Content-Type=application/json" \
         --attempt-deadline=120s
     
     echo "✅ Cloud Scheduler job для тенниса обновлён!"
@@ -79,12 +79,12 @@ if gcloud scheduler jobs describe $PADEL_WEEK1_JOB_NAME --location=$REGION &>/de
     echo "   Job уже существует, обновляем..."
     gcloud scheduler jobs update http $PADEL_WEEK1_JOB_NAME \
         --location=$REGION \
-        --schedule='0 * 8-21 * * *' \
+        --schedule='0 8-21 * * *' \
         --time-zone='Europe/Moscow' \
         --uri="$FUNCTION_URL" \
         --http-method=POST \
         --message-body='{"sport":"padel","startDay":0,"endDay":7}' \
-        --headers="Content-Type=application/json" \
+        --update-headers="Content-Type=application/json" \
         --attempt-deadline=120s
     
     echo "✅ Cloud Scheduler job для падела (неделя 1) обновлён!"
@@ -92,7 +92,7 @@ else
     echo "   Job не существует, создаём новый..."
     gcloud scheduler jobs create http $PADEL_WEEK1_JOB_NAME \
         --location=$REGION \
-        --schedule='0 * 8-21 * * *' \
+        --schedule='0 8-21 * * *' \
         --time-zone='Europe/Moscow' \
         --uri="$FUNCTION_URL" \
         --http-method=POST \
@@ -117,7 +117,7 @@ if gcloud scheduler jobs describe $PADEL_WEEK2_JOB_NAME --location=$REGION &>/de
         --uri="$FUNCTION_URL" \
         --http-method=POST \
         --message-body='{"sport":"padel","startDay":7,"endDay":14}' \
-        --headers="Content-Type=application/json" \
+        --update-headers="Content-Type=application/json" \
         --attempt-deadline=120s
     
     echo "✅ Cloud Scheduler job для падела (неделя 2) обновлён!"

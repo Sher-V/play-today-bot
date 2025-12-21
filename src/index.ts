@@ -613,18 +613,52 @@ function formatDateShort(dateKey: string): string {
 /**
  * Форматирует слоты избранных кортов в новый формат (группировка по кортам)
  */
+/**
+ * Определяет частоту обновления данных на основе типа спорта и даты
+ */
+function getUpdateFrequency(sport: Sport, dateKey?: string): string {
+  if (sport === SportType.TENNIS) {
+    return 'каждые 20 минут';
+  }
+  
+  // Для падела определяем неделю на основе даты
+  if (sport === SportType.PADEL && dateKey) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const targetDate = new Date(dateKey);
+    targetDate.setHours(0, 0, 0, 0);
+    const daysDiff = Math.floor((targetDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (daysDiff >= 0 && daysDiff < 7) {
+      return 'раз в час';
+    } else if (daysDiff >= 7 && daysDiff < 14) {
+      return 'раз в сутки';
+    }
+  }
+  
+  // По умолчанию для падела - раз в час (первая неделя)
+  if (sport === SportType.PADEL) {
+    return 'раз в час';
+  }
+  
+  return 'каждые 20 минут';
+}
+
 function formatFavoriteCourtsSlots(
   courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>>,
   lastUpdated: string | undefined,
   singleDateStr?: string, // Если указана одна дата, показываем её в заголовке
   dateRangeStart?: string, // Дата начала диапазона (YYYY-MM-DD) для корректного отображения "ближайшие 3 дня"
-  dateRangeEnd?: string // Дата конца диапазона (YYYY-MM-DD)
+  dateRangeEnd?: string, // Дата конца диапазона (YYYY-MM-DD)
+  sport: Sport = SportType.TENNIS // Тип спорта для определения частоты обновления
 ): string {
   let message = '';
   
+  const emoji = sport === SportType.PADEL ? '🏓' : '🎾';
+  
   // Если указана одна дата, показываем её в заголовке
   if (singleDateStr) {
-    message = `🎾 *Ниже показаны слоты на ${singleDateStr}*`;
+    message = `${emoji} *Ниже показаны слоты на ${singleDateStr}*`;
   } else {
     // Формируем заголовок с диапазоном дат
     let dateRangeText = '';
@@ -681,16 +715,20 @@ function formatFavoriteCourtsSlots(
       }
     }
     
-    message = `🎾 *Ниже показаны слоты на ближайшие 3 дня (${dateRangeText})*`;
+    message = `${emoji} *Ниже показаны слоты на ближайшие 3 дня (${dateRangeText})*`;
   }
   
   message += '\n\n';
   
   // Итерируемся по кортам
+  const COURT_NAMES = sport === SportType.PADEL ? PADEL_COURT_NAMES : TENNIS_COURT_NAMES;
+  const COURT_LINKS = sport === SportType.PADEL ? PADEL_COURT_LINKS : TENNIS_COURT_LINKS;
+  const COURT_MAPS = sport === SportType.PADEL ? PADEL_COURT_MAPS : TENNIS_COURT_MAPS;
+  
   for (const [siteName, datesData] of courtsData.entries()) {
-    const displayName = TENNIS_COURT_NAMES[siteName] || siteName;
-    const bookingLink = TENNIS_COURT_LINKS[siteName];
-    const mapLink = TENNIS_COURT_MAPS[siteName];
+    const displayName = COURT_NAMES[siteName] || siteName;
+    const bookingLink = COURT_LINKS[siteName];
+    const mapLink = COURT_MAPS[siteName];
     
     // Формируем строку со ссылками
     const links: string[] = [];
@@ -782,7 +820,10 @@ function formatFavoriteCourtsSlots(
   if (lastUpdated) {
     const formattedTime = formatLastUpdatedTime(lastUpdated);
     if (formattedTime) {
-      message += `\n\nℹ️ Данные актуальны на ${formattedTime} (МСК) и обновляются каждые 20 минут.`;
+      // Определяем частоту обновления на основе типа спорта и первой даты
+      const firstDateKey = Array.from(courtsData.values())[0]?.[0]?.dateKey;
+      const updateFreq = getUpdateFrequency(sport, firstDateKey);
+      message += `\n\nℹ️ Данные актуальны на ${formattedTime} (МСК) и обновляются ${updateFreq}.`;
     }
   }
   
@@ -934,7 +975,9 @@ function formatSlotsPage(
   if (lastUpdated) {
     const formattedTime = formatLastUpdatedTime(lastUpdated);
     if (formattedTime) {
-      message += `\nℹ️ _Данные актуальны на ${formattedTime} (МСК) и обновляются каждые 20 минут._`;
+      // Определяем частоту обновления на основе типа спорта и даты
+      const updateFreq = getUpdateFrequency(sport, dateKey);
+      message += `\nℹ️ _Данные актуальны на ${formattedTime} (МСК) и обновляются ${updateFreq}._`;
     }
   }
   
