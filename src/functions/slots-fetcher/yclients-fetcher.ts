@@ -152,12 +152,24 @@ async function fetchYClientsSlotsForDay(config: YClientsConfig, dateStr: string)
 
 /**
  * Делает запросы к YClients API для всех дней
+ * @param config - конфигурация площадки
+ * @param startDay - начальный день (0 = сегодня, опционально)
+ * @param endDay - конечный день (исключительно, опционально)
  */
-export async function fetchYClientsSlotsForSite(config: YClientsConfig): Promise<SiteSlots> {
+export async function fetchYClientsSlotsForSite(config: YClientsConfig, startDay?: number, endDay?: number): Promise<SiteSlots> {
   const result: SiteSlots = {};
   const daysAhead = config.daysAhead || 14;
+  const start = startDay !== undefined ? startDay : 0;
+  // Если endDay указан явно, используем его (но не больше daysAhead из конфигурации)
+  const end = endDay !== undefined ? Math.min(endDay, daysAhead) : daysAhead;
   
-  for (let i = 0; i < daysAhead; i++) {
+  // Проверяем, что start < end
+  if (start >= end) {
+    console.log(`⚠️ Skipping ${config.name}: startDay (${start}) >= endDay (${end}) or exceeds daysAhead (${daysAhead})`);
+    return {};
+  }
+  
+  for (let i = start; i < end; i++) {
     const dateStr = formatDateForYClients(i);
     try {
       const daySlots = await fetchYClientsSlotsForDay(config, dateStr);
@@ -167,7 +179,7 @@ export async function fetchYClientsSlotsForSite(config: YClientsConfig): Promise
       }
       
       // Задержка между запросами
-      if (i < daysAhead - 1) {
+      if (i < end - 1) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
     } catch (error) {

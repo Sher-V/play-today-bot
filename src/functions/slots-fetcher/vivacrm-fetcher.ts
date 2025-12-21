@@ -119,12 +119,24 @@ export async function fetchVivaCrmSlotsForDay(config: VivaCrmConfig, dateStr: st
 
 /**
  * Делает запросы к VivaCRM API для всех дней
+ * @param config - конфигурация площадки
+ * @param startDay - начальный день (0 = сегодня, опционально)
+ * @param endDay - конечный день (исключительно, опционально)
  */
-export async function fetchVivaCrmSlotsForSite(config: VivaCrmConfig): Promise<SiteSlots> {
+export async function fetchVivaCrmSlotsForSite(config: VivaCrmConfig, startDay?: number, endDay?: number): Promise<SiteSlots> {
   const result: SiteSlots = {};
   const daysAhead = config.daysAhead || 14;
+  const start = startDay !== undefined ? startDay : 0;
+  // Если endDay указан явно, используем его (но не больше daysAhead из конфигурации)
+  const end = endDay !== undefined ? Math.min(endDay, daysAhead) : daysAhead;
   
-  for (let i = 0; i < daysAhead; i++) {
+  // Проверяем, что start < end
+  if (start >= end) {
+    console.log(`⚠️ Skipping ${config.name}: startDay (${start}) >= endDay (${end}) or exceeds daysAhead (${daysAhead})`);
+    return {};
+  }
+  
+  for (let i = start; i < end; i++) {
     const dateStr = formatDateForYClients(i); // Используем ту же функцию форматирования
     try {
       const daySlots = await fetchVivaCrmSlotsForDay(config, dateStr);
@@ -133,7 +145,7 @@ export async function fetchVivaCrmSlotsForSite(config: VivaCrmConfig): Promise<S
         console.log(`  📅 ${dateStr}: ${daySlots.length} слотов`);
       }
       
-      if (i < daysAhead - 1) {
+      if (i < end - 1) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
     } catch (error) {

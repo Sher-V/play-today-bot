@@ -2109,12 +2109,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const currentPageOffset = parseInt(parts[0]) || 0;
     const sport = parts[1] === SportType.PADEL ? SportType.PADEL : SportType.TENNIS;
     
-    // Для падела навигация по неделям недоступна - только одна неделя
-    if (sport === SportType.PADEL) {
-      await safeAnswerCallbackQuery(query.id, { text: 'Для падела доступна только одна неделя' });
-      return;
-    }
-    
     const newPageOffset = isPrev ? currentPageOffset - 1 : currentPageOffset + 1;
     
     const datesToShow = getDatesForWeekRange(newPageOffset);
@@ -2619,9 +2613,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
       
       // Добавляем кнопки навигации
-      // Для падела показываем только одну неделю (7 дней), для тенниса - две недели
-      if (sport === SportType.TENNIS) {
-        // На первой странице (pageOffset = 0) показываем только кнопку "Следующая неделя"
+      // На первой странице (pageOffset = 0) показываем только кнопку "Следующая неделя"
+      // На второй странице (pageOffset = 1) показываем только кнопку "Предыдущая неделя"
+      if (pageOffset === 0) {
+        // Первая страница - только кнопка "Следующая неделя"
         const nextWeekDates = getDatesForWeekRange(pageOffset + 1);
         if (nextWeekDates.length > 0) {
           rows.push([{
@@ -2629,8 +2624,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             callback_data: `week_next_${pageOffset}_${sport}`
           }]);
         }
+      } else if (pageOffset === 1) {
+        // Вторая страница - только кнопка "Предыдущая неделя"
+        rows.push([{
+          text: '◀️ Предыдущая неделя',
+          callback_data: `week_prev_${pageOffset}_${sport}`
+        }]);
       }
-      // Для падела не показываем кнопку навигации - только одна неделя
       
       // Редактируем сообщение с выбором даты
       const messageId = query.message?.message_id;

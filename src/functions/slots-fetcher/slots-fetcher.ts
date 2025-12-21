@@ -405,13 +405,27 @@ async function fetchSlotsForDay(config: SiteConfig, dayTimestamp: number): Promi
 
 /**
  * Делает запросы к API для всех дней конфигурации
+ * @param config - конфигурация площадки
+ * @param startDay - начальный день (0 = сегодня, опционально)
+ * @param endDay - конечный день (исключительно, опционально)
  */
-async function fetchSlotsForSite(config: SiteConfig): Promise<SiteSlots> {
+async function fetchSlotsForSite(config: SiteConfig, startDay?: number, endDay?: number): Promise<SiteSlots> {
   const daysAhead = config.daysAhead || 7;
+  const start = startDay !== undefined ? startDay : 0;
+  // Если endDay указан явно, используем его (но не больше daysAhead из конфигурации)
+  // Если не указан, используем daysAhead из конфигурации
+  const end = endDay !== undefined ? Math.min(endDay, daysAhead) : daysAhead;
+  
+  // Проверяем, что start < end
+  if (start >= end) {
+    console.log(`⚠️ Skipping ${config.name}: startDay (${start}) >= endDay (${end}) or exceeds daysAhead (${daysAhead})`);
+    return {};
+  }
+  
   const allRawSlots: RawSlot[] = [];
   
-  // Запрашиваем каждый день (начиная с сегодня)
-  for (let i = 0; i < daysAhead; i++) {
+  // Запрашиваем каждый день в указанном диапазоне
+  for (let i = start; i < end; i++) {
     const dayTimestamp = getDayTimestamp(i);
     // Форматируем дату в локальном времени (не UTC)
     const date = new Date(dayTimestamp * 1000);
@@ -424,7 +438,7 @@ async function fetchSlotsForSite(config: SiteConfig): Promise<SiteSlots> {
       allRawSlots.push(...daySlots);
       
       // Небольшая задержка между запросами чтобы не перегружать API
-      if (i < daysAhead - 1) {
+      if (i < end - 1) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
     } catch (error) {
@@ -549,8 +563,10 @@ async function fetchAllTennisSlots(): Promise<AllSlotsResult> {
 
 /**
  * Собирает слоты со всех сконфигурированных площадок для падела
+ * @param startDay - начальный день (0 = сегодня, опционально)
+ * @param endDay - конечный день (исключительно, опционально)
  */
-async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
+async function fetchAllPadelSlots(startDay?: number, endDay?: number): Promise<AllSlotsResult> {
   const result: AllSlotsResult = {
     lastUpdated: new Date().toISOString(),
     sites: {}
@@ -560,7 +576,7 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
   for (const config of SITE_PADEL_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (reservi.ru)`);
-      const siteSlots = await fetchSlotsForSite(config);
+      const siteSlots = await fetchSlotsForSite(config, startDay, endDay);
       // Фильтруем по часам работы корта
       result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
@@ -574,7 +590,7 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
   for (const config of YCLIENTS_PADEL_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (yclients)`);
-      const siteSlots = await fetchYClientsSlotsForSite(config);
+      const siteSlots = await fetchYClientsSlotsForSite(config, startDay, endDay);
       // Фильтруем по часам работы корта
       result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
@@ -588,7 +604,7 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
   for (const config of VIVACRM_PADEL_CONFIGS) {
     try {
       console.log(`Fetching slots for: ${config.name} (vivacrm)`);
-      const siteSlots = await fetchVivaCrmSlotsForSite(config);
+      const siteSlots = await fetchVivaCrmSlotsForSite(config, startDay, endDay);
       // Фильтруем по часам работы корта
       result.sites[config.name] = filterSiteSlotsByWorkingHours(siteSlots, config.name);
       console.log(`✅ Successfully fetched ${config.name}`);
@@ -602,8 +618,66 @@ async function fetchAllPadelSlots(): Promise<AllSlotsResult> {
 }
 
 /**
+ * Извлекает параметры из запроса (query или body)
+ */
+function extractRequestParams(req: CloudFunctionRequest): {
+  sport: Sport | null;
+  startDay: number | undefined;
+  endDay: number | undefined;
+} {
+  let sport: Sport | null = null;
+  let startDay: number | undefined;
+  let endDay: number | undefined;
+  
+  // Пробуем из query параметров
+  if (req.url) {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const sportParam = url.searchParams.get('sport');
+      if (sportParam === SportType.PADEL || sportParam === SportType.TENNIS) {
+        sport = sportParam as Sport;
+      }
+      const startDayParam = url.searchParams.get('startDay');
+      if (startDayParam) {
+        startDay = parseInt(startDayParam, 10);
+        if (isNaN(startDay)) startDay = undefined;
+      }
+      const endDayParam = url.searchParams.get('endDay');
+      if (endDayParam) {
+        endDay = parseInt(endDayParam, 10);
+        if (isNaN(endDay)) endDay = undefined;
+      }
+    } catch (e) {
+      // Игнорируем ошибки парсинга URL
+    }
+  }
+  
+  // Пробуем из body
+  try {
+    const body = req.body as { sport?: string; startDay?: number | string; endDay?: number | string } | undefined;
+    if (body?.sport === SportType.PADEL || body?.sport === SportType.TENNIS) {
+      sport = body.sport as Sport;
+    }
+    if (body?.startDay !== undefined) {
+      startDay = typeof body.startDay === 'string' ? parseInt(body.startDay, 10) : body.startDay;
+      if (isNaN(startDay)) startDay = undefined;
+    }
+    if (body?.endDay !== undefined) {
+      endDay = typeof body.endDay === 'string' ? parseInt(body.endDay, 10) : body.endDay;
+      if (isNaN(endDay)) endDay = undefined;
+    }
+  } catch (e) {
+    // Игнорируем ошибки парсинга body
+  }
+  
+  return { sport, startDay, endDay };
+}
+
+/**
  * Cloud Function для сбора слотов
- * POST - запустить сбор и сохранить в Cloud Storage (обновляет данные для тенниса и падела)
+ * POST - запустить сбор и сохранить в Cloud Storage
+ *   - Без параметра sport: собирает данные для тенниса и падела (обратная совместимость)
+ *   - С параметром sport=tennis|padel: собирает данные только для указанного спорта
  * GET - получить данные из Cloud Storage
  * Поддерживает параметр ?sport=tennis|padel для GET запросов
  */
@@ -659,8 +733,84 @@ export const slotsFetcher = async (req: CloudFunctionRequest, res: CloudFunction
       return;
     }
     
-    // POST - собираем данные для обоих типов спорта и сохраняем
+    // POST - собираем данные и сохраняем
     if (req.method === 'POST') {
+      const { sport: requestedSport, startDay, endDay } = extractRequestParams(req);
+      
+      // Если указан конкретный спорт, собираем только его
+      if (requestedSport === SportType.TENNIS) {
+        console.log('Starting slots fetch for tennis only...');
+        
+        const tennisData = await fetchAllTennisSlots();
+        const tennisStoragePaths = await saveToStorage(tennisData, SportType.TENNIS);
+        
+        const tennisSiteCount = Object.keys(tennisData.sites).length;
+        let tennisTotalSlots = 0;
+        for (const site of Object.values(tennisData.sites)) {
+          for (const slots of Object.values(site)) {
+            tennisTotalSlots += slots.length;
+          }
+        }
+        
+        console.log(`✅ Fetched ${tennisTotalSlots} tennis slots from ${tennisSiteCount} sites`);
+        console.log(`📁 Saved ${tennisStoragePaths.length} tennis date files`);
+        
+        res.status(200).json({
+          success: true,
+          sport: SportType.TENNIS,
+          lastUpdated: tennisData.lastUpdated,
+          sitesCount: tennisSiteCount,
+          totalSlots: tennisTotalSlots,
+          filesCount: tennisStoragePaths.length,
+          storagePaths: tennisStoragePaths,
+          mode: USE_LOCAL_STORAGE ? 'local' : 'cloud'
+        });
+        return;
+      }
+      
+      if (requestedSport === SportType.PADEL) {
+        const dayRange = startDay !== undefined || endDay !== undefined 
+          ? ` (days ${startDay ?? 0}-${endDay ?? 'default'})`
+          : '';
+        console.log(`Starting slots fetch for padel only${dayRange}...`);
+        
+        const padelData = await fetchAllPadelSlots(startDay, endDay);
+        const padelStoragePaths = await saveToStorage(padelData, SportType.PADEL);
+        
+        const padelSiteCount = Object.keys(padelData.sites).length;
+        let padelTotalSlots = 0;
+        for (const site of Object.values(padelData.sites)) {
+          for (const slots of Object.values(site)) {
+            padelTotalSlots += slots.length;
+          }
+        }
+        
+        console.log(`✅ Fetched ${padelTotalSlots} padel slots from ${padelSiteCount} sites`);
+        console.log(`📁 Saved ${padelStoragePaths.length} padel date files`);
+        
+        const response: Record<string, unknown> = {
+          success: true,
+          sport: SportType.PADEL,
+          lastUpdated: padelData.lastUpdated,
+          sitesCount: padelSiteCount,
+          totalSlots: padelTotalSlots,
+          filesCount: padelStoragePaths.length,
+          storagePaths: padelStoragePaths,
+          mode: USE_LOCAL_STORAGE ? 'local' : 'cloud'
+        };
+        
+        if (startDay !== undefined || endDay !== undefined) {
+          response.dayRange = {
+            startDay: startDay ?? 0,
+            endDay: endDay ?? 'default'
+          };
+        }
+        
+        res.status(200).json(response);
+        return;
+      }
+      
+      // Если параметр sport не указан, собираем оба (обратная совместимость)
       console.log('Starting slots fetch for both tennis and padel...');
       
       // Собираем данные для тенниса и падела параллельно
