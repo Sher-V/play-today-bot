@@ -230,6 +230,88 @@ async function updateUserFavorites(userId: number, favorites: string[]): Promise
   }
 }
 
+/**
+ * Отображает все активные переуступки с пагинацией
+ */
+async function handleShowAllTransfers(chatId: number, userId: number, page: number = 1, pageSize: number = 10): Promise<void> {
+  // Собираем все активные переуступки от всех пользователей
+  const allTransfers: Array<{ userId: number; transfer: CourtTransfer; index: number }> = [];
+  let globalIndex = 0;
+  
+  for (const [transferUserId, transfers] of courtTransfers.entries()) {
+    for (const transfer of transfers) {
+      if (transfer.isActive) {
+        allTransfers.push({ userId: transferUserId, transfer, index: globalIndex++ });
+      }
+    }
+  }
+  
+  if (allTransfers.length === 0) {
+    // Нет предложений - показываем кнопку разместить
+    await getBot().sendMessage(chatId, 'Пока нет активных предложений. Будь первым!', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '➕ Разместить своё предложение', callback_data: 'transfer_create' }]
+        ]
+      }
+    });
+    return;
+  }
+  
+  // Вычисляем пагинацию
+  const totalPages = Math.ceil(allTransfers.length / pageSize);
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, allTransfers.length);
+  const pageTransfers = allTransfers.slice(startIndex, endIndex);
+  
+  // Формируем текст сообщения
+  let message = '🔥 Горячие предложения:\n\n';
+  pageTransfers.forEach((item, idx) => {
+    const num = startIndex + idx + 1;
+    message += `${num}. ${item.transfer.text}\n\n`;
+  });
+  
+  if (totalPages > 1) {
+    message += `\nСтраница ${page} из ${totalPages}`;
+  }
+  
+  // Формируем клавиатуру
+  const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+  
+  // Кнопки пагинации
+  if (totalPages > 1) {
+    const navButtons: TelegramBot.InlineKeyboardButton[] = [];
+    if (page > 1) {
+      navButtons.push({ text: '◀️', callback_data: `transfer_page_${page - 1}` });
+    }
+    if (page < totalPages) {
+      navButtons.push({ text: '▶️', callback_data: `transfer_page_${page + 1}` });
+    }
+    if (navButtons.length > 0) {
+      keyboard.push(navButtons);
+    }
+  }
+  
+  // Кнопка разместить предложение
+  keyboard.push([{ text: '➕ Разместить своё предложение', callback_data: 'transfer_create' }]);
+  
+  // Если у пользователя есть активные переуступки, добавляем кнопки управления
+  const userTransfers = (courtTransfers.get(userId) || []).filter(t => t.isActive);
+  if (userTransfers.length > 0) {
+    keyboard.push(
+      [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
+      [{ text: '✏️ Изменить предложение', callback_data: 'transfer_edit' }],
+      [{ text: '📋 Мои предложения', callback_data: 'transfer_my' }]
+    );
+  }
+  
+  await getBot().sendMessage(chatId, message, {
+    reply_markup: {
+      inline_keyboard: keyboard
+    }
+  });
+}
+
 // Опции районов
 const districtOptions = [
   { id: 'center', label: 'Центр' },
@@ -284,6 +366,20 @@ interface SearchState {
   totalPages?: number;
 }
 const searchStates = new Map<number, SearchState>();
+
+// Структура для переуступок кортов
+interface CourtTransfer {
+  userId: number;
+  text: string;
+  createdAt: Date;
+  isActive: boolean;
+}
+
+// Хранилище переуступок (в памяти, по userId)
+const courtTransfers = new Map<number, CourtTransfer[]>();
+
+// Состояние ожидания ввода переуступки
+const waitingForTransfer = new Set<number>();
 
 // === Функции для работы со слотами ===
 
@@ -1412,8 +1508,8 @@ async function handleStart(msg: TelegramBot.Message) {
     parse_mode: 'HTML',
     reply_markup: {
       keyboard: [
-        [{ text: '🎾 Найти корт (теннис)' }],
-        [{ text: '🏓 Найти корт (падел)' }],
+        [{ text: '🎾 Найти корт (теннис)' }, { text: '🏓 Найти корт (падел)' }],
+        [{ text: '🔥 Горячие предложения' }],
         [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }],
       ],
       resize_keyboard: true
@@ -1747,6 +1843,46 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
       break;
+    case '🔥 Горячие предложения':
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'hot_offers',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      // Проверяем, есть ли у пользователя активные переуступки
+      const userTransfers = userId ? (courtTransfers.get(userId) || []).filter(t => t.isActive) : [];
+      
+      if (userTransfers.length > 0) {
+        // Есть активные переуступки - показываем 3 кнопки
+        await getBot().sendMessage(chatId, 'У тебя есть активное предложение!', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
+              [{ text: '✏️ Изменить предложение', callback_data: 'transfer_edit' }],
+              [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
+            ]
+          }
+        });
+      } else {
+        // Нет активных переуступок - показываем список всех предложений
+        await handleShowAllTransfers(chatId, userId || 0);
+      }
+      break;
     // case '👤 Профиль':
     //   await getBot().sendMessage(chatId, '👤 Как к тебе обращаться?', {
     //     reply_markup: {
@@ -1754,6 +1890,32 @@ async function handleMessage(msg: TelegramBot.Message) {
     //     }
     //   });
     //   break;
+  }
+  
+  // Проверяем, ожидает ли пользователь ввода переуступки
+  if (userId && waitingForTransfer.has(userId) && text) {
+    // Сохраняем переуступку
+    if (!courtTransfers.has(userId)) {
+      courtTransfers.set(userId, []);
+    }
+    const transfers = courtTransfers.get(userId)!;
+    transfers.push({
+      userId,
+      text,
+      createdAt: new Date(),
+      isActive: true
+    });
+    waitingForTransfer.delete(userId);
+    
+    await getBot().sendMessage(chatId, '✅ Предложение размещено! После размещения появится кнопочка "отменить предложение".', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
+          [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
+        ]
+      }
+    });
+    return;
   }
 }
 
@@ -2945,6 +3107,144 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Обработка переуступок
+  if (data?.startsWith('transfer_')) {
+    if (data === 'transfer_create') {
+      // Разместить своё предложение
+      const rulesText = `Правила переуступки корта:
+
+1) Напишите, какой корт хотите переуступить в формате:
+
+"Название корта, покрытие, дата, время, длительность, цена, как связаться (тг/номер)"
+
+пример: "Спартак, хард, 23.12, 18:00, 1 час, 1800, @play_today_chat)"
+
+2) <b>Если корт забрали - пожалуйста, не забывайте его отменить!</b> После размещения предложения появится кнопочка "отменить предложение"
+
+3) рекомендуем снижать цену по сравнению с той, по которой купили
+
+Напишите, какой корт хотите переуступить в формате выше👇`;
+
+      waitingForTransfer.add(userId);
+      await getBot().sendMessage(chatId, rulesText, {
+        parse_mode: 'HTML'
+      });
+      return;
+    }
+    
+    if (data === 'transfer_cancel') {
+      // Отменить предложение
+      const userTransfers = courtTransfers.get(userId) || [];
+      const activeTransfers = userTransfers.filter(t => t.isActive);
+      
+      if (activeTransfers.length === 0) {
+        await getBot().sendMessage(chatId, 'У тебя нет активных предложений для отмены.');
+        return;
+      }
+      
+      // Отменяем все активные переуступки пользователя
+      for (const transfer of activeTransfers) {
+        transfer.isActive = false;
+      }
+      
+      await getBot().sendMessage(chatId, '✅ Предложение отменено.');
+      return;
+    }
+    
+    if (data === 'transfer_edit') {
+      // Изменить предложение
+      const userTransfers = courtTransfers.get(userId) || [];
+      const activeTransfers = userTransfers.filter(t => t.isActive);
+      
+      if (activeTransfers.length === 0) {
+        await getBot().sendMessage(chatId, 'У тебя нет активных предложений для изменения.');
+        return;
+      }
+      
+      // Отменяем текущее предложение и создаем новое
+      for (const transfer of activeTransfers) {
+        transfer.isActive = false;
+      }
+      
+      waitingForTransfer.add(userId);
+      const rulesText = `Правила переуступки корта:
+
+1) Напишите, какой корт хотите переуступить в формате:
+
+"Название корта, покрытие, дата, время, длительность, цена, как связаться (тг/номер)"
+
+пример: "Спартак, хард, 23.12, 18:00, 1 час, 1800, @play_today_chat)"
+
+2) <b>Если корт забрали - пожалуйста, не забывайте его отменить!</b> После размещения предложения появится кнопочка "отменить предложение"
+
+3) рекомендуем снижать цену по сравнению с той, по которой купили
+
+Напишите, какой корт хотите переуступить в формате выше👇`;
+
+      await getBot().sendMessage(chatId, rulesText, {
+        parse_mode: 'HTML'
+      });
+      return;
+    }
+    
+    if (data === 'transfer_view_all') {
+      // Посмотреть все предложения
+      await handleShowAllTransfers(chatId, userId);
+      return;
+    }
+    
+    if (data === 'transfer_my') {
+      // Мои предложения
+      const userTransfers = (courtTransfers.get(userId) || []).filter(t => t.isActive);
+      
+      if (userTransfers.length === 0) {
+        await getBot().sendMessage(chatId, 'У тебя нет активных предложений.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '➕ Разместить своё предложение', callback_data: 'transfer_create' }]
+            ]
+          }
+        });
+        return;
+      }
+      
+      let message = '📋 Твои активные предложения:\n\n';
+      userTransfers.forEach((transfer, idx) => {
+        message += `${idx + 1}. ${transfer.text}\n\n`;
+      });
+      
+      await getBot().sendMessage(chatId, message, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
+            [{ text: '✏️ Изменить предложение', callback_data: 'transfer_edit' }],
+            [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
+          ]
+        }
+      });
+      return;
+    }
+    
+    if (data?.startsWith('transfer_page_')) {
+      // Пагинация списка предложений
+      const page = parseInt(data.replace('transfer_page_', ''), 10);
+      if (page > 0) {
+        await handleShowAllTransfers(chatId, userId, page);
+        // Обновляем сообщение, если возможно
+        const messageId = query.message?.message_id;
+        if (messageId) {
+          // Удаляем старое сообщение и отправляем новое
+          try {
+            await getBot().deleteMessage(chatId, messageId);
+          } catch (e) {
+            // Игнорируем ошибку удаления
+          }
+        }
+      }
+      return;
+    }
+  }
+
   // Кнопка "Вернуться на главную"
   if (data === 'action_home') {
     const profile = await getUserProfile(userId);
@@ -2954,8 +3254,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       parse_mode: 'HTML',
       reply_markup: {
         keyboard: [
-          [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '🏓 Найти корт (падел)' }],
+          [{ text: '🎾 Найти корт (теннис)' }, { text: '🏓 Найти корт (падел)' }],
+          [{ text: '🔥 Горячие предложения' }],
           [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }]
           // [{ text: '👤 Профиль' }]
         ],
