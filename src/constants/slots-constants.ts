@@ -227,6 +227,15 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
       3057716: "Корт 4"
     }
   },
+  {
+    name: TennisSiteId.FLY_TENNIS,
+    locationId: 900772,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b971026.yclients.com",
+    daysAhead: 14,
+    slotDuration: 30, // Слоты по 30 минут
+    staffId: -1
+  },
 ];
 
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ПАДЕЛ ⬇️
