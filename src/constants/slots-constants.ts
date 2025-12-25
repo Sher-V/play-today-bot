@@ -213,6 +213,20 @@ export const YCLIENTS_CONFIGS: YClientsConfig[] = [
     slotDuration: 60,
     staffId: null
   },
+  {
+    name: TennisSiteId.SPORT_STANCIYA,
+    locationId: 930190,
+    authToken: "gtcwf654agufy25gsadh",
+    origin: "https://b1002579.yclients.com",
+    daysAhead: 14,
+    slotDuration: 60,
+    staffIds: {
+      2832612: "Корт 1",
+      2832616: "Корт 2",
+      3057710: "Корт 3",
+      3057716: "Корт 4"
+    }
+  },
 ];
 
 // ⬇️ КОНФИГУРАЦИИ YCLIENTS (platform.yclients.com) - ПАДЕЛ ⬇️
