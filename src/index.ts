@@ -2,7 +2,7 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Storage } from '@google-cloud/storage';
-import { Firestore } from '@google-cloud/firestore';
+import { Firestore, Timestamp } from '@google-cloud/firestore';
 import * as fs from 'fs';
 import * as path from 'path';
 import { trackButtonClick, generateSessionId, parseButtonType } from './analytics';
@@ -186,6 +186,9 @@ const firestore = new Firestore();
 // Коллекция пользователей в Firestore
 const USERS_COLLECTION = 'users';
 
+// Коллекция переуступок в Firestore
+const TRANSFERS_COLLECTION = 'transfers';
+
 /**
  * Получает профиль пользователя из Firestore
  */
@@ -231,20 +234,152 @@ async function updateUserFavorites(userId: number, favorites: string[]): Promise
 }
 
 /**
+ * Обрабатывает запрос на просмотр избранных кортов
+ */
+async function handleFavoritesRequest(chatId: number, userId: number): Promise<void> {
+  // Проверяем, есть ли у пользователя избранные корты
+  const userProfile = userId ? await getUserProfile(userId) : null;
+  const favoriteCourts = userProfile?.favorites || [];
+  
+  if (favoriteCourts.length === 0) {
+    // Нет избранных кортов - показываем предложение добавить
+    await getBot().sendMessage(
+      chatId,
+      'Избранные корты — твой быстрый доступ к любимым площадкам.\n\n' +
+      '• в 1 клик будешь видеть ближайшие слоты только по ним\n' +
+      '• в общем поиске они будут вверху списка\n\n' +
+      'Добавим?',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ Выбрать избранные', callback_data: 'favorites_select' }],
+            [{ text: '◀️ Назад', callback_data: 'action_home' }]
+          ]
+        }
+      }
+    );
+  } else {
+    // Есть избранные корты - сразу показываем ближайшие слоты
+    await getBot().sendMessage(
+      chatId,
+      '🔍 Ищу ближайшие свободные слоты по твоим избранным кортам...'
+    );
+    
+    // Получаем даты на 3 дня вперед
+    const moscowToday = getMoscowTime();
+    moscowToday.setHours(0, 0, 0, 0);
+    const dates: string[] = [];
+    const dateStrs: string[] = [];
+    
+    for (let i = 0; i < 3; i++) {
+      const date = new Date(moscowToday);
+      date.setDate(date.getDate() + i);
+      const dateKey = formatMoscowDateToYYYYMMDD(date);
+      const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+      dates.push(dateKey);
+      dateStrs.push(dateStr);
+    }
+    
+    // Собираем слоты по кортам (группировка по кортам, а не по датам)
+    const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
+    let lastUpdatedTime: string | undefined = undefined;
+    
+    for (let i = 0; i < dates.length; i++) {
+      const dateKey = dates[i];
+      const dateStr = dateStrs[i];
+      
+      const slotsData = await loadSlots(SportType.TENNIS, dateKey);
+      if (slotsData) {
+        // Сохраняем время обновления (берем самое свежее)
+        if (slotsData.lastUpdated && (!lastUpdatedTime || slotsData.lastUpdated > lastUpdatedTime)) {
+          lastUpdatedTime = slotsData.lastUpdated;
+        }
+        
+        // Получаем слоты на дату
+        let siteSlots = getSlotsByDate(slotsData, dateKey);
+        
+        // Фильтруем только по избранным кортам
+        siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
+        
+        // Добавляем слоты в структуру по кортам
+        for (const { siteName, slots } of siteSlots) {
+          if (!courtsData.has(siteName)) {
+            courtsData.set(siteName, []);
+          }
+          courtsData.get(siteName)!.push({
+            date: dateStr,
+            dateKey: dateKey,
+            slots: slots
+          });
+        }
+      }
+    }
+    
+    if (courtsData.size === 0) {
+      await getBot().sendMessage(
+        chatId,
+        '⭐ На ближайшие 3 дня по твоим избранным кортам свободных слотов не найдено.',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
+            ]
+          }
+        }
+      );
+    } else {
+      // Сортируем корты по приоритету
+      const sortedCourts = Array.from(courtsData.entries()).sort(([siteNameA], [siteNameB]) => {
+        const aHasMetro = !!TENNIS_COURT_METRO[siteNameA];
+        const bHasMetro = !!TENNIS_COURT_METRO[siteNameB];
+        const aIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameA] || []).includes('moscow-region');
+        const bIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameB] || []).includes('moscow-region');
+        
+        if (aHasMetro && !bHasMetro) return -1;
+        if (!aHasMetro && bHasMetro) return 1;
+        if (aIsMoscowRegion && !bIsMoscowRegion) return 1;
+        if (!aIsMoscowRegion && bIsMoscowRegion) return -1;
+        return 0;
+      });
+      
+      const sortedCourtsData = new Map(sortedCourts);
+      // Передаем явный диапазон дат для корректного отображения "ближайшие 3 дня"
+      const message = formatFavoriteCourtsSlots(
+        sortedCourtsData, 
+        lastUpdatedTime,
+        undefined, // singleDateStr
+        dates[0], // dateRangeStart - первая дата диапазона (сегодня)
+        dates[dates.length - 1] // dateRangeEnd - последняя дата диапазона (через 2 дня от сегодня)
+      );
+      
+      await getBot().sendMessage(
+        chatId,
+        message,
+        {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+              [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+              [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
+            ]
+          }
+        }
+      );
+    }
+  }
+}
+
+/**
  * Отображает все активные переуступки с пагинацией
  */
 async function handleShowAllTransfers(chatId: number, userId: number, page: number = 1, pageSize: number = 10): Promise<void> {
-  // Собираем все активные переуступки от всех пользователей
-  const allTransfers: Array<{ userId: number; transfer: CourtTransfer; index: number }> = [];
-  let globalIndex = 0;
-  
-  for (const [transferUserId, transfers] of courtTransfers.entries()) {
-    for (const transfer of transfers) {
-      if (transfer.isActive) {
-        allTransfers.push({ userId: transferUserId, transfer, index: globalIndex++ });
-      }
-    }
-  }
+  // Получаем все активные переуступки из Firestore
+  const allTransfers = await getAllActiveTransfers();
   
   if (allTransfers.length === 0) {
     // Нет предложений - показываем кнопку разместить
@@ -266,9 +401,9 @@ async function handleShowAllTransfers(chatId: number, userId: number, page: numb
   
   // Формируем текст сообщения
   let message = '🔥 Горячие предложения:\n\n';
-  pageTransfers.forEach((item, idx) => {
+  pageTransfers.forEach((transfer, idx) => {
     const num = startIndex + idx + 1;
-    message += `${num}. ${item.transfer.text}\n\n`;
+    message += `${num}. ${transfer.text}\n\n`;
   });
   
   if (totalPages > 1) {
@@ -296,11 +431,10 @@ async function handleShowAllTransfers(chatId: number, userId: number, page: numb
   keyboard.push([{ text: '➕ Разместить своё предложение', callback_data: 'transfer_create' }]);
   
   // Если у пользователя есть активные переуступки, добавляем кнопки управления
-  const userTransfers = (courtTransfers.get(userId) || []).filter(t => t.isActive);
+  const userTransfers = await getUserTransfers(userId, true);
   if (userTransfers.length > 0) {
     keyboard.push(
-      [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
-      [{ text: '✏️ Изменить предложение', callback_data: 'transfer_edit' }],
+      [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
       [{ text: '📋 Мои предложения', callback_data: 'transfer_my' }]
     );
   }
@@ -371,15 +505,196 @@ const searchStates = new Map<number, SearchState>();
 interface CourtTransfer {
   userId: number;
   text: string;
-  createdAt: Date;
+  createdAt: Date | Timestamp;
   isActive: boolean;
+  id?: string; // ID документа в Firestore
 }
 
-// Хранилище переуступок (в памяти, по userId)
-const courtTransfers = new Map<number, CourtTransfer[]>();
-
-// Состояние ожидания ввода переуступки
+// Состояние ожидания ввода переуступки (временное, в памяти)
 const waitingForTransfer = new Set<number>();
+
+/**
+ * Сохраняет переуступку в Firestore
+ */
+async function saveTransfer(userId: number, text: string): Promise<string | null> {
+  try {
+    const transferData = {
+      userId,
+      text,
+      createdAt: Timestamp.now(), // Используем Timestamp для корректной работы с Firestore
+      isActive: true
+    };
+    
+    const docRef = await firestore.collection(TRANSFERS_COLLECTION).add(transferData);
+    return docRef.id;
+  } catch (error) {
+    console.error(`Ошибка сохранения переуступки для пользователя ${userId}:`, error);
+    if (error instanceof Error) {
+      console.error('Детали ошибки:', error.message, error.stack);
+    }
+    return null;
+  }
+}
+
+/**
+ * Получает все активные переуступки пользователя из Firestore
+ */
+async function getUserTransfers(userId: number, activeOnly: boolean = false): Promise<CourtTransfer[]> {
+  try {
+    let query = firestore.collection(TRANSFERS_COLLECTION)
+      .where('userId', '==', userId);
+    
+    if (activeOnly) {
+      query = query.where('isActive', '==', true);
+    }
+    
+    const snapshot = await query.get();
+    const transfers: CourtTransfer[] = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      // Правильно обрабатываем Timestamp из Firestore
+      let createdAt: Date | Timestamp;
+      if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+        createdAt = data.createdAt.toDate();
+      } else if (data.createdAt instanceof Timestamp) {
+        createdAt = data.createdAt.toDate();
+      } else if (data.createdAt instanceof Date) {
+        createdAt = data.createdAt;
+      } else {
+        createdAt = new Date();
+      }
+      
+      transfers.push({
+        userId: data.userId,
+        text: data.text,
+        isActive: data.isActive === true,
+        id: doc.id,
+        createdAt
+      } as CourtTransfer);
+    });
+    
+    return transfers;
+  } catch (error) {
+    console.error(`Ошибка получения переуступок пользователя ${userId}:`, error);
+    if (error instanceof Error) {
+      console.error('Детали ошибки:', error.message, error.stack);
+    }
+    return [];
+  }
+}
+
+/**
+ * Получает все активные переуступки всех пользователей из Firestore
+ */
+async function getAllActiveTransfers(): Promise<CourtTransfer[]> {
+  try {
+    // Сначала получаем все активные переуступки без orderBy (чтобы не требовать индекс)
+    const snapshot = await firestore.collection(TRANSFERS_COLLECTION)
+      .where('isActive', '==', true)
+      .get();
+    
+    const transfers: CourtTransfer[] = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      // Правильно обрабатываем Timestamp из Firestore
+      let createdAt: Date | Timestamp;
+      if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+        createdAt = data.createdAt.toDate();
+      } else if (data.createdAt instanceof Timestamp) {
+        createdAt = data.createdAt.toDate();
+      } else if (data.createdAt instanceof Date) {
+        createdAt = data.createdAt;
+      } else {
+        createdAt = new Date();
+      }
+      
+      transfers.push({
+        userId: data.userId,
+        text: data.text,
+        isActive: data.isActive === true,
+        id: doc.id,
+        createdAt
+      } as CourtTransfer);
+    });
+    
+    // Сортируем в памяти по дате создания (новые первыми)
+    transfers.sort((a, b) => {
+      const dateA = a.createdAt instanceof Date ? a.createdAt.getTime() : 
+                    (a.createdAt instanceof Timestamp ? a.createdAt.toMillis() : 0);
+      const dateB = b.createdAt instanceof Date ? b.createdAt.getTime() : 
+                    (b.createdAt instanceof Timestamp ? b.createdAt.toMillis() : 0);
+      return dateB - dateA; // Сортировка по убыванию (новые первыми)
+    });
+    
+    return transfers;
+  } catch (error) {
+    console.error('Ошибка получения всех активных переуступок:', error);
+    // Логируем детали ошибки для отладки
+    if (error instanceof Error) {
+      console.error('Детали ошибки:', error.message, error.stack);
+    }
+    return [];
+  }
+}
+
+/**
+ * Отменяет все активные переуступки пользователя
+ */
+async function cancelUserTransfers(userId: number): Promise<boolean> {
+  try {
+    const activeTransfers = await getUserTransfers(userId, true);
+    
+    if (activeTransfers.length === 0) {
+      return false;
+    }
+    
+    const batch = firestore.batch();
+    for (const transfer of activeTransfers) {
+      if (transfer.id) {
+        const ref = firestore.collection(TRANSFERS_COLLECTION).doc(transfer.id);
+        batch.update(ref, { isActive: false });
+      }
+    }
+    
+    await batch.commit();
+    return true;
+  } catch (error) {
+    console.error(`Ошибка отмены переуступок пользователя ${userId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Отменяет конкретную переуступку по ID
+ */
+async function cancelTransferById(transferId: string): Promise<boolean> {
+  try {
+    const ref = firestore.collection(TRANSFERS_COLLECTION).doc(transferId);
+    await ref.update({ isActive: false });
+    return true;
+  } catch (error) {
+    console.error(`Ошибка отмены переуступки ${transferId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Парсит текст предложения и извлекает информацию для отображения
+ */
+function parseTransferText(text: string): { court: string; date: string; time: string } {
+  // Формат: "Название корта, покрытие, дата, время, длительность, цена, как связаться"
+  // Пример: "Спартак, хард, 23.12, 18:00, 1 час, 1800, @play_today_chat)"
+  
+  const parts = text.split(',').map(p => p.trim());
+  
+  const court = parts[0] || 'Корт';
+  const date = parts[2] || '';
+  const time = parts[3] || '';
+  
+  return { court, date, time };
+}
 
 // === Функции для работы со слотами ===
 
@@ -1510,7 +1825,7 @@ async function handleStart(msg: TelegramBot.Message) {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }, { text: '🏓 Найти корт (падел)' }],
         [{ text: '🔥 Горячие предложения' }],
-        [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }],
+        [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
       ],
       resize_keyboard: true
     }
@@ -1684,141 +1999,38 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      // Проверяем, есть ли у пользователя избранные корты
-      const userProfile = userId ? await getUserProfile(userId) : null;
-      const favoriteCourts = userProfile?.favorites || [];
-      
-      if (favoriteCourts.length === 0) {
-        // Нет избранных кортов - показываем предложение добавить
-        await getBot().sendMessage(
+      await handleFavoritesRequest(chatId, userId || 0);
+      break;
+    case '👤 Профиль':
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
           chatId,
-          'Избранные корты — твой быстрый доступ к любимым площадкам.\n\n' +
-          '• в 1 клик будешь видеть ближайшие слоты только по ним\n' +
-          '• в общем поиске они будут вверху списка\n\n' +
-          'Добавим?',
-          {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '➕ Выбрать избранные', callback_data: 'favorites_select' }],
-                [{ text: '◀️ Назад', callback_data: 'action_home' }]
-              ]
-            }
-          }
-        );
-      } else {
-        // Есть избранные корты - сразу показываем ближайшие слоты
-        await getBot().sendMessage(
-          chatId,
-          '🔍 Ищу ближайшие свободные слоты по твоим избранным кортам...'
-        );
-        
-        // Получаем даты на 3 дня вперед
-        const moscowToday = getMoscowTime();
-        moscowToday.setHours(0, 0, 0, 0);
-        const dates: string[] = [];
-        const dateStrs: string[] = [];
-        
-        for (let i = 0; i < 3; i++) {
-          const date = new Date(moscowToday);
-          date.setDate(date.getDate() + i);
-          const dateKey = formatMoscowDateToYYYYMMDD(date);
-          const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-          dates.push(dateKey);
-          dateStrs.push(dateStr);
-        }
-        
-        // Собираем слоты по кортам (группировка по кортам, а не по датам)
-        const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
-        let lastUpdatedTime: string | undefined = undefined;
-        
-        for (let i = 0; i < dates.length; i++) {
-          const dateKey = dates[i];
-          const dateStr = dateStrs[i];
-          
-          const slotsData = await loadSlots(SportType.TENNIS, dateKey);
-          if (slotsData) {
-            // Сохраняем время обновления (берем самое свежее)
-            if (slotsData.lastUpdated && (!lastUpdatedTime || slotsData.lastUpdated > lastUpdatedTime)) {
-              lastUpdatedTime = slotsData.lastUpdated;
-            }
-            
-            // Получаем слоты на дату
-            let siteSlots = getSlotsByDate(slotsData, dateKey);
-            
-            // Фильтруем только по избранным кортам
-            siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
-            
-            // Добавляем слоты в структуру по кортам
-            for (const { siteName, slots } of siteSlots) {
-              if (!courtsData.has(siteName)) {
-                courtsData.set(siteName, []);
-              }
-              courtsData.get(siteName)!.push({
-                date: dateStr,
-                dateKey: dateKey,
-                slots: slots
-              });
-            }
-          }
-        }
-        
-        if (courtsData.size === 0) {
-          await getBot().sendMessage(
-            chatId,
-            '⭐ На ближайшие 3 дня по твоим избранным кортам свободных слотов не найдено.',
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
-                  [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
-                  [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
-                ]
-              }
-            }
-          );
-        } else {
-          // Сортируем корты по приоритету
-          const sortedCourts = Array.from(courtsData.entries()).sort(([siteNameA], [siteNameB]) => {
-            const aHasMetro = !!TENNIS_COURT_METRO[siteNameA];
-            const bHasMetro = !!TENNIS_COURT_METRO[siteNameB];
-            const aIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameA] || []).includes('moscow-region');
-            const bIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameB] || []).includes('moscow-region');
-            
-            if (aHasMetro && !bHasMetro) return -1;
-            if (!aHasMetro && bHasMetro) return 1;
-            if (aIsMoscowRegion && !bIsMoscowRegion) return 1;
-            if (!aIsMoscowRegion && bIsMoscowRegion) return -1;
-            return 0;
-          });
-          
-          const sortedCourtsData = new Map(sortedCourts);
-          // Передаем явный диапазон дат для корректного отображения "ближайшие 3 дня"
-          const message = formatFavoriteCourtsSlots(
-            sortedCourtsData, 
-            lastUpdatedTime,
-            undefined, // singleDateStr
-            dates[0], // dateRangeStart - первая дата диапазона (сегодня)
-            dates[dates.length - 1] // dateRangeEnd - последняя дата диапазона (через 2 дня от сегодня)
-          );
-          
-          await getBot().sendMessage(
-            chatId,
-            message,
-            {
-              parse_mode: 'Markdown',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
-                  [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
-                  [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
-                ]
-              }
-            }
-          );
-        }
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'profile',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
       }
+      
+      // Показываем меню профиля с кнопкой избранных кортов
+      await getBot().sendMessage(chatId, '👤 Профиль', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
+            [{ text: '◀️ Назад', callback_data: 'action_home' }]
+          ]
+        }
+      });
       break;
     case '💬 Чат участников':
       // Отслеживаем клик на текстовую кнопку
@@ -1865,15 +2077,14 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
       
       // Проверяем, есть ли у пользователя активные переуступки
-      const userTransfers = userId ? (courtTransfers.get(userId) || []).filter(t => t.isActive) : [];
+      const userTransfers = userId ? await getUserTransfers(userId, true) : [];
       
       if (userTransfers.length > 0) {
         // Есть активные переуступки - показываем 3 кнопки
         await getBot().sendMessage(chatId, 'У тебя есть активное предложение!', {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
-              [{ text: '✏️ Изменить предложение', callback_data: 'transfer_edit' }],
+              [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
               [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
             ]
           }
@@ -1893,28 +2104,43 @@ async function handleMessage(msg: TelegramBot.Message) {
   }
   
   // Проверяем, ожидает ли пользователь ввода переуступки
+  // ВАЖНО: проверяем это ПОСЛЕ обработки всех системных команд в switch выше
   if (userId && waitingForTransfer.has(userId) && text) {
-    // Сохраняем переуступку
-    if (!courtTransfers.has(userId)) {
-      courtTransfers.set(userId, []);
+    // Проверяем, что это не системная команда/кнопка (на случай, если что-то пропустили)
+    const systemCommands = [
+      '🎾 Найти корт (теннис)',
+      '🏓 Найти корт (падел)',
+      '🔥 Горячие предложения',
+      '👤 Профиль',
+      '💬 Чат участников',
+      '⭐ Избранные корты',
+      '/start',
+      '/help'
+    ];
+    
+    if (systemCommands.includes(text)) {
+      // Это системная команда, не сохраняем как переуступку
+      waitingForTransfer.delete(userId);
+      // Команда уже должна была обработаться в switch выше, просто выходим
+      return;
     }
-    const transfers = courtTransfers.get(userId)!;
-    transfers.push({
-      userId,
-      text,
-      createdAt: new Date(),
-      isActive: true
-    });
+    
+    // Сохраняем переуступку в Firestore
+    const transferId = await saveTransfer(userId, text);
     waitingForTransfer.delete(userId);
     
-    await getBot().sendMessage(chatId, '✅ Предложение размещено! После размещения появится кнопочка "отменить предложение".', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
-          [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
-        ]
-      }
-    });
+    if (transferId) {
+      await getBot().sendMessage(chatId, '✅ Предложение размещено! Пожалуйста, если корт заберут, не забудьте отменить его здесь.', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
+            [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
+          ]
+        }
+      });
+    } else {
+      await getBot().sendMessage(chatId, '❌ Произошла ошибка при сохранении предложения. Попробуйте позже.');
+    }
     return;
   }
 }
@@ -3134,17 +3360,11 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     if (data === 'transfer_cancel') {
       // Отменить предложение
-      const userTransfers = courtTransfers.get(userId) || [];
-      const activeTransfers = userTransfers.filter(t => t.isActive);
+      const cancelled = await cancelUserTransfers(userId);
       
-      if (activeTransfers.length === 0) {
+      if (!cancelled) {
         await getBot().sendMessage(chatId, 'У тебя нет активных предложений для отмены.');
         return;
-      }
-      
-      // Отменяем все активные переуступки пользователя
-      for (const transfer of activeTransfers) {
-        transfer.isActive = false;
       }
       
       await getBot().sendMessage(chatId, '✅ Предложение отменено.');
@@ -3153,18 +3373,68 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     if (data === 'transfer_edit') {
       // Изменить предложение
-      const userTransfers = courtTransfers.get(userId) || [];
-      const activeTransfers = userTransfers.filter(t => t.isActive);
+      const userTransfers = await getUserTransfers(userId, true);
       
-      if (activeTransfers.length === 0) {
+      if (userTransfers.length === 0) {
         await getBot().sendMessage(chatId, 'У тебя нет активных предложений для изменения.');
         return;
       }
       
-      // Отменяем текущее предложение и создаем новое
-      for (const transfer of activeTransfers) {
-        transfer.isActive = false;
+      // Если больше одного предложения - показываем выбор
+      if (userTransfers.length > 1) {
+        let message = 'Выбери предложение для изменения:\n\n';
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+        
+        userTransfers.forEach((transfer, idx) => {
+          const parsed = parseTransferText(transfer.text);
+          // Формат: "1. 23.12 18:00 - Спартак"
+          const buttonText = `${idx + 1}. ${parsed.date} ${parsed.time} - ${parsed.court}`;
+          keyboard.push([{ text: buttonText, callback_data: `transfer_edit_id_${transfer.id}` }]);
+        });
+        
+        keyboard.push([{ text: '◀️ Назад', callback_data: 'transfer_view_all' }]);
+        
+        await getBot().sendMessage(chatId, message, {
+          reply_markup: {
+            inline_keyboard: keyboard
+          }
+        });
+        return;
       }
+      
+      // Если одно предложение - сразу редактируем его
+      const transfer = userTransfers[0];
+      if (transfer.id) {
+        await cancelTransferById(transfer.id);
+      }
+      
+      waitingForTransfer.add(userId);
+      const rulesText = `Правила переуступки корта:
+
+1) Напишите, какой корт хотите переуступить в формате:
+
+"Название корта, покрытие, дата, время, длительность, цена, как связаться (тг/номер)"
+
+пример: "Спартак, хард, 23.12, 18:00, 1 час, 1800, @play_today_chat)"
+
+2) <b>Если корт забрали - пожалуйста, не забывайте его отменить!</b> После размещения предложения появится кнопочка "отменить предложение"
+
+3) рекомендуем снижать цену по сравнению с той, по которой купили
+
+Напишите, какой корт хотите переуступить в формате выше👇`;
+
+      await getBot().sendMessage(chatId, rulesText, {
+        parse_mode: 'HTML'
+      });
+      return;
+    }
+    
+    if (data?.startsWith('transfer_edit_id_')) {
+      // Редактирование конкретного предложения по ID
+      const transferId = data.replace('transfer_edit_id_', '');
+      
+      // Отменяем выбранное предложение
+      await cancelTransferById(transferId);
       
       waitingForTransfer.add(userId);
       const rulesText = `Правила переуступки корта:
@@ -3195,7 +3465,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     if (data === 'transfer_my') {
       // Мои предложения
-      const userTransfers = (courtTransfers.get(userId) || []).filter(t => t.isActive);
+      const userTransfers = await getUserTransfers(userId, true);
       
       if (userTransfers.length === 0) {
         await getBot().sendMessage(chatId, 'У тебя нет активных предложений.', {
@@ -3216,8 +3486,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       await getBot().sendMessage(chatId, message, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '❌ Отменить предложение', callback_data: 'transfer_cancel' }],
-            [{ text: '✏️ Изменить предложение', callback_data: 'transfer_edit' }],
+            [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
             [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
           ]
         }
@@ -3256,12 +3525,17 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }, { text: '🏓 Найти корт (падел)' }],
           [{ text: '🔥 Горячие предложения' }],
-          [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }]
-          // [{ text: '👤 Профиль' }]
+          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }]
         ],
         resize_keyboard: true
       }
     });
+    return;
+  }
+
+  // Обработка избранных кортов из профиля
+  if (data === 'profile_favorites') {
+    await handleFavoritesRequest(chatId, userId);
     return;
   }
 
