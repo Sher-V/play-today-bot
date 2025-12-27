@@ -766,7 +766,7 @@ function formatFavoriteCourtsSlots(
         // Пытаемся получить цену из конфигурации
         const [hours, minutes] = time.split(':').map(Number);
         const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
-        const configPrice = getCourtPrice(siteName, dateTimeStr);
+        const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
         const price = configPrice !== null ? configPrice : (slot.price || 0);
         
         if (!times.includes(time)) {
@@ -943,7 +943,7 @@ function formatSlotsPage(
       const [hours, minutes] = time.split(':').map(Number);
       // Формируем строку с московским часовым поясом
       const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
-      const configPrice = getCourtPrice(siteName, dateTimeStr);
+      const configPrice = getCourtPrice(siteName, dateTimeStr, duration);
       // Используем цену из конфигурации, если она найдена, иначе используем цену из слота
       if (configPrice !== null) {
         price = configPrice;

@@ -18,11 +18,13 @@ export function getCourtWorkingHours(siteId: string): WorkingHours | null {
  * Получает цену за час для указанного корта, даты и времени
  * @param siteId ID площадки
  * @param dateTime Дата и время слота (строка в формате ISO или Date объект)
- * @returns Цена за час в рублях или null, если конфигурация не найдена
+ * @param duration Длительность слота в минутах (опционально). Если 30, цена делится на 2
+ * @returns Цена в рублях или null, если конфигурация не найдена
  */
 export function getCourtPrice(
   siteId: string,
-  dateTime: string | Date
+  dateTime: string | Date,
+  duration?: number
 ): number | null {
   const config = COURT_PRICING[siteId];
   if (!config) {
@@ -38,7 +40,12 @@ export function getCourtPrice(
   // Находим подходящий диапазон
   for (const range of ranges) {
     if (hour >= range.startHour && hour < range.endHour) {
-      return range.price;
+      let price = range.price;
+      // Если слот 30 минут, делим цену на 2 (цена в конфиге указана за 60 минут)
+      if (duration === 30) {
+        price = price / 2;
+      }
+      return price;
     }
   }
 
