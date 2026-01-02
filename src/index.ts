@@ -751,66 +751,28 @@ function formatFavoriteCourtsSlots(
       message += `📍 *${displayName}*\n`;
     }
     
-    // Для каждой даты собираем времена и цены
+    // Для каждой даты группируем слоты по цене
     for (const { date, dateKey, slots } of datesData) {
       if (slots.length === 0) continue;
       
-      const dateStr = formatDateShort(dateKey);
+      // Группируем слоты по цене и длительности (дубли по времени уже обрабатываются внутри функции)
+      const groupedSlots = groupSlotsByPrice(slots, siteName, dateKey);
       
-      // Собираем все уникальные времена и цены для этой даты
-      const times: string[] = [];
-      const prices: number[] = [];
-      
-      for (const slot of slots) {
-        const time = slot.time;
-        // Пытаемся получить цену из конфигурации
-        const [hours, minutes] = time.split(':').map(Number);
-        const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
-        const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
-        const price = configPrice !== null ? configPrice : (slot.price || 0);
+      // Форматируем сгруппированные слоты
+      for (const group of groupedSlots) {
+        // Всегда вычисляем время окончания и показываем диапазон
+        const endTime = getEndTime(group.endTime, group.duration);
+        const timeRange = `${group.startTime}–${endTime}`;
         
-        if (!times.includes(time)) {
-          times.push(time);
+        // Формируем строку с информацией о слоте
+        let slotInfo = `🕒 ${timeRange}`;
+        if (group.price !== null) {
+          slotInfo += ` — ${group.price}₽`;
         }
-        if (price > 0 && !prices.includes(price)) {
-          prices.push(price);
-        }
+        slotInfo += '\n';
+        
+        message += slotInfo;
       }
-      
-      // Сортируем времена
-      const sortedTimes = times.sort((a, b) => {
-        const [hoursA, minsA] = a.split(':').map(Number);
-        const [hoursB, minsB] = b.split(':').map(Number);
-        if (hoursA !== hoursB) return hoursA - hoursB;
-        return minsA - minsB;
-      });
-      
-      // Сортируем цены
-      prices.sort((a, b) => a - b);
-      
-      // Формируем строку времени
-      let timeStr: string;
-      if (sortedTimes.length === 1) {
-        timeStr = sortedTimes[0];
-      } else {
-        // Берем первое и последнее время для диапазона
-        timeStr = `${sortedTimes[0]} · ${sortedTimes[sortedTimes.length - 1]}`;
-      }
-      
-      // Формируем строку цены
-      let priceStr: string;
-      if (prices.length === 0) {
-        priceStr = '';
-      } else if (prices.length === 1) {
-        priceStr = ` — ${prices[0]} ₽`;
-      } else {
-        // Диапазон цен
-        const minPrice = prices[0];
-        const maxPrice = prices[prices.length - 1];
-        priceStr = ` — ${minPrice}–${maxPrice} ₽`;
-      }
-      
-      message += `${dateStr} — ${timeStr}${priceStr}\n`;
     }
     
     message += '\n';
@@ -823,11 +785,148 @@ function formatFavoriteCourtsSlots(
       // Определяем частоту обновления на основе типа спорта и первой даты
       const firstDateKey = Array.from(courtsData.values())[0]?.[0]?.dateKey;
       const updateFreq = getUpdateFrequency(sport, firstDateKey);
-      message += `\n\nℹ️ Данные актуальны на ${formattedTime} (МСК) и обновляются ${updateFreq}.`;
+      message += `\n💰 Все цены указаны за 1 час.\nℹ️ Данные актуальны на ${formattedTime} (МСК) и обновляются ${updateFreq}.`;
     }
   }
   
   return message.trimEnd();
+}
+
+/**
+ * Группирует соседние слоты с одинаковой ценой и длительностью в временные диапазоны
+ */
+interface GroupedSlot {
+  startTime: string;
+  endTime: string;
+  duration: number | undefined;
+  price: number | null;
+}
+
+function groupSlotsByPrice(
+  slots: Slot[],
+  siteName: string,
+  dateKey: string
+): GroupedSlot[] {
+  if (slots.length === 0) return [];
+
+  // Получаем цену для каждого слота из конфигурации
+  const slotsWithPrice = slots.map(slot => {
+    const [hours, minutes] = slot.time.split(':').map(Number);
+    const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+    const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
+    let price = configPrice !== null ? configPrice : (slot.price || null);
+    
+    // Если слот имеет длительность 30 минут, умножаем цену на 2, чтобы показать цену за 1 час
+    if (price !== null && slot.duration === 30) {
+      price = price * 2;
+    }
+    
+    return { ...slot, calculatedPrice: price };
+  });
+
+  // Сначала группируем слоты по времени начала и длительности, выбирая минимальную цену
+  const timeGroups = new Map<string, { time: string; duration: number | undefined; price: number | null }>();
+  
+  for (const slot of slotsWithPrice) {
+    // Ключ только по времени и длительности (без цены)
+    const key = `${slot.time}_${slot.duration}`;
+    
+    if (!timeGroups.has(key)) {
+      // Первый слот с этим временем и длительностью
+      timeGroups.set(key, {
+        time: slot.time,
+        duration: slot.duration,
+        price: slot.calculatedPrice
+      });
+    } else {
+      // Если уже есть слот с этим временем, выбираем минимальную цену
+      const existing = timeGroups.get(key)!;
+      if (slot.calculatedPrice !== null && existing.price !== null) {
+        // Оба имеют цену - выбираем минимальную
+        if (slot.calculatedPrice < existing.price) {
+          existing.price = slot.calculatedPrice;
+        }
+      } else if (slot.calculatedPrice !== null && existing.price === null) {
+        // Если у существующего нет цены, а у нового есть - используем новую
+        existing.price = slot.calculatedPrice;
+      }
+      // Если у нового нет цены, а у существующего есть - оставляем существующую (ничего не делаем)
+    }
+  }
+
+  // Преобразуем в массив и сортируем по времени
+  const uniqueTimeSlots = Array.from(timeGroups.values()).sort((a, b) => {
+    const [hoursA, minsA] = a.time.split(':').map(Number);
+    const [hoursB, minsB] = b.time.split(':').map(Number);
+    if (hoursA !== hoursB) return hoursA - hoursB;
+    return minsA - minsB;
+  });
+
+  // Теперь схлопываем соседние слоты с одинаковой ценой и длительностью
+  const groups: GroupedSlot[] = [];
+  let currentGroup: { startTime: string; endTime: string; duration: number | undefined; price: number | null } | null = null;
+
+  for (const timeSlot of uniqueTimeSlots) {
+    // Преобразуем время в минуты для сравнения
+    const [slotStartHours, slotStartMins] = timeSlot.time.split(':').map(Number);
+    const slotStartMinutes = slotStartHours * 60 + slotStartMins;
+    
+    // Проверяем, можем ли мы добавить слот в текущую группу
+    if (currentGroup && 
+        currentGroup.price === timeSlot.price && 
+        currentGroup.duration === timeSlot.duration) {
+      // Вычисляем время окончания последнего слота в группе
+      const prevSlotEndTime = getEndTime(currentGroup.endTime, currentGroup.duration);
+      const [prevEndHours, prevEndMins] = prevSlotEndTime.split(':').map(Number);
+      const prevEndMinutes = prevEndHours * 60 + prevEndMins;
+      
+      // Если слот перекрывается или идет сразу после предыдущего, схлопываем
+      // (время начала текущего слота <= время окончания предыдущего)
+      if (slotStartMinutes <= prevEndMinutes) {
+        // Обновляем endTime до времени начала нового слота, если он позже
+        const [currentEndHours, currentEndMins] = currentGroup.endTime.split(':').map(Number);
+        const currentEndMinutes = currentEndHours * 60 + currentEndMins;
+        if (slotStartMinutes > currentEndMinutes) {
+          currentGroup.endTime = timeSlot.time;
+        }
+        continue;
+      }
+    }
+
+    // Сохраняем предыдущую группу, если она есть
+    if (currentGroup) {
+      groups.push(currentGroup);
+    }
+    // Начинаем новую группу
+    currentGroup = {
+      startTime: timeSlot.time,
+      endTime: timeSlot.time,
+      duration: timeSlot.duration,
+      price: timeSlot.price
+    };
+  }
+
+  // Добавляем последнюю группу
+  if (currentGroup) {
+    groups.push(currentGroup);
+  }
+
+  return groups;
+}
+
+/**
+ * Вычисляет время окончания слота на основе времени начала и длительности
+ */
+function getEndTime(startTime: string, duration: number | undefined): string {
+  if (!duration) return startTime;
+  
+  const [hours, minutes] = startTime.split(':').map(Number);
+  const startMinutes = hours * 60 + minutes;
+  const endMinutes = startMinutes + duration;
+  const endHours = Math.floor(endMinutes / 60);
+  const endMins = endMinutes % 60;
+  
+  return `${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')}`;
 }
 
 /**
@@ -914,48 +1013,19 @@ function formatSlotsPage(
       message += `📍 *${nameWithMetro}*\n`;
     }
     
-    // Удаляем дубли (по времени и корту)
-    const uniqueSlots = slots.filter((slot, index, self) => 
-      index === self.findIndex(s => 
-        s.time === slot.time && s.roomName === slot.roomName
-      )
-    );
+    // Группируем слоты по цене и длительности (дубли по времени уже обрабатываются внутри функции)
+    const groupedSlots = groupSlotsByPrice(slots, siteName, dateKey);
     
-    // Группируем слоты по времени
-    const groupedByTime: { [time: string]: Slot[] } = {};
-    for (const slot of uniqueSlots) {
-      if (!groupedByTime[slot.time]) {
-        groupedByTime[slot.time] = [];
-      }
-      groupedByTime[slot.time].push(slot);
-    }
-    
-    // Сортируем по времени
-    const times = Object.keys(groupedByTime).sort();
-    
-    for (const time of times) {
-      const timeSlots = groupedByTime[time];
-      let price = timeSlots[0].price;
-      const duration = timeSlots[0].duration;
-      
-      // Всегда пытаемся получить цену из конфигурации, если она есть для этого корта
-      // Это гарантирует, что цены из конфигурации имеют приоритет над ценами в слотах
-      const [hours, minutes] = time.split(':').map(Number);
-      // Формируем строку с московским часовым поясом
-      const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
-      const configPrice = getCourtPrice(siteName, dateTimeStr, duration);
-      // Используем цену из конфигурации, если она найдена, иначе используем цену из слота
-      if (configPrice !== null) {
-        price = configPrice;
-      }
+    // Форматируем сгруппированные слоты
+    for (const group of groupedSlots) {
+      // Всегда вычисляем время окончания и показываем диапазон
+      const endTime = getEndTime(group.endTime, group.duration);
+      const timeRange = `${group.startTime}–${endTime}`;
       
       // Формируем строку с информацией о слоте
-      let slotInfo = `  ⏰ ${time}`;
-      if (duration) {
-        slotInfo += ` (${duration} мин)`;
-      }
-      if (price) {
-        slotInfo += ` — ${price}₽`;
+      let slotInfo = `🕒 ${timeRange}`;
+      if (group.price !== null) {
+        slotInfo += ` — ${group.price}₽`;
       }
       slotInfo += '\n';
       
@@ -968,7 +1038,7 @@ function formatSlotsPage(
   // Добавляем информацию о странице, если есть несколько страниц
   const totalPages = Math.ceil(siteSlots.length / pageSize);
   if (totalPages > 1) {
-    message += `\n\n📄 _Страница ${page} из ${totalPages}_`;
+    message += `\n📄 _Страница ${page} из ${totalPages}_`;
   }
   
   // Добавляем информацию об актуальности данных
@@ -977,7 +1047,7 @@ function formatSlotsPage(
     if (formattedTime) {
       // Определяем частоту обновления на основе типа спорта и даты
       const updateFreq = getUpdateFrequency(sport, dateKey);
-      message += `\nℹ️ _Данные актуальны на ${formattedTime} (МСК) и обновляются ${updateFreq}._`;
+      message += `\n💰 Все цены указаны за 1 час.\nℹ️ _Данные актуальны на ${formattedTime} (МСК) и обновляются ${updateFreq}._`;
     }
   }
   
