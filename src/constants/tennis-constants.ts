@@ -26,14 +26,24 @@ export enum TennisSiteId {
   REZIDENCYA = "rezidenciya",
   TENNIS_RU = "tennis-ru",
   SPORT_STANCIYA = "sport-stanciya",
-  FLY_TENNIS = "fly-tennis"
+  FLY_TENNIS = "fly-tennis",
+  ACE = "ace",
+  BUD_ZOROV = "bud-zorov",
+  LEGION = "legion",
+  PLAY_PARK = "play-park",
+  AVANTAGE = "avantage",
+  ODINTSOVO_40_LOVE = "odintsovo-40-love",
+  RAKETLON = "raketlon",
+  TENNIS_ART = "tennis-art",
+  TENNIS_PARK = "tennis-park",
+  VTB_ARENA = "vtb-arena"
 }
 
 // Названия площадок для отображения (теннис)
 export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.IMPULS]: "Импульс",
-  [TennisSiteId.SPARTAK_GRUNT]: "Спартак» — крытый грунт",
-  [TennisSiteId.SPARTAK_HARD]: "Спартак» — хард",
+  [TennisSiteId.SPARTAK_GRUNT]: "Спартак — крытый грунт",
+  [TennisSiteId.SPARTAK_HARD]: "Спартак — хард",
   [TennisSiteId.ITC_TSARITSYNO]: "ITC by WeGym «Царицыно»",
   [TennisSiteId.ITC_MYTISCHY]: "ITC by WeGym «Мытищи»",
   [TennisSiteId.VIDNYSPORT]: "Видный Спорт",
@@ -57,7 +67,17 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "Теннисный центр Резиденция",
   [TennisSiteId.TENNIS_RU]: "Tennis.ru",
   [TennisSiteId.SPORT_STANCIYA]: "Спорт Станция",
-  [TennisSiteId.FLY_TENNIS]: "Fly Tennis"
+  [TennisSiteId.FLY_TENNIS]: "Fly Tennis",
+  [TennisSiteId.ACE]: "Эйс",
+  [TennisSiteId.BUD_ZOROV]: "Будь Здоров",
+  [TennisSiteId.LEGION]: "Легион",
+  [TennisSiteId.PLAY_PARK]: "Плэй Парк",
+  [TennisSiteId.AVANTAGE]: "Авантаж",
+  [TennisSiteId.ODINTSOVO_40_LOVE]: "Одинцово 40 love",
+  [TennisSiteId.RAKETLON]: "Ракетлон",
+  [TennisSiteId.TENNIS_ART]: "Теннис Арт",
+  [TennisSiteId.TENNIS_PARK]: "Теннис Парк",
+  [TennisSiteId.VTB_ARENA]: "ВТБ Арена (Динамо)"
 };
 
 // Ссылки на бронирование кортов (теннис)
@@ -119,7 +139,17 @@ export const TENNIS_COURT_MAPS: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "https://yandex.ru/maps/-/CLw8RPLm",
   [TennisSiteId.TENNIS_RU]: "https://yandex.ru/maps/-/CLwcUWi2",
   [TennisSiteId.SPORT_STANCIYA]: "https://yandex.ru/maps/-/CLHubQIP",
-  [TennisSiteId.FLY_TENNIS]: "https://yandex.ru/maps/-/CLD0jRyk"
+  [TennisSiteId.FLY_TENNIS]: "https://yandex.ru/maps/-/CLD0jRyk",
+  [TennisSiteId.ACE]: "https://yandex.ru/maps/-/CLHuRXiA",
+  [TennisSiteId.BUD_ZOROV]: "https://yandex.ru/maps/-/CLHufSMf",
+  [TennisSiteId.LEGION]: "https://yandex.ru/maps/-/CLHyMJoi",
+  [TennisSiteId.PLAY_PARK]: "https://yandex.ru/profile/-/CLHyQUOO",
+  [TennisSiteId.AVANTAGE]: "https://yandex.ru/maps/-/CLHyQG6m",
+  [TennisSiteId.ODINTSOVO_40_LOVE]: "https://yandex.ru/profile/-/CLHyUUy1",
+  [TennisSiteId.RAKETLON]: "https://yandex.ru/maps/-/CLHlvRZ5",
+  [TennisSiteId.TENNIS_ART]: "https://yandex.ru/maps/-/CLHl7X0j",
+  [TennisSiteId.TENNIS_PARK]: "https://yandex.ru/maps/-/CLHpE4o4",
+  [TennisSiteId.VTB_ARENA]: "https://yandex.ru/profile/-/CLHpQMjH"
 };
 
 // Маппинг метро/города для кортов (теннис)
@@ -150,7 +180,17 @@ export const TENNIS_COURT_METRO: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "Троицк",
   [TennisSiteId.TENNIS_RU]: "Коммунарка",
   [TennisSiteId.SPORT_STANCIYA]: "Бунинская аллея",
-  [TennisSiteId.FLY_TENNIS]: "Ховрино"
+  [TennisSiteId.FLY_TENNIS]: "Ховрино",
+  [TennisSiteId.ACE]: "Речной Вокзал",
+  [TennisSiteId.BUD_ZOROV]: "Тютчевская",
+  [TennisSiteId.LEGION]: "Борисово",
+  [TennisSiteId.PLAY_PARK]: "Юго-Западная",
+  [TennisSiteId.AVANTAGE]: "Подмосковье",
+  [TennisSiteId.ODINTSOVO_40_LOVE]: "Подмосковье",
+  [TennisSiteId.RAKETLON]: "Раменки",
+  [TennisSiteId.TENNIS_ART]: "Отрадное",
+  [TennisSiteId.TENNIS_PARK]: "Нижегородская",
+  [TennisSiteId.VTB_ARENA]: "Динамо"
 };
 
 // Маппинг округов/районов для кортов (теннис)
@@ -181,7 +221,17 @@ export const TENNIS_COURT_DISTRICTS: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "Троицк",
   [TennisSiteId.TENNIS_RU]: "ЮЗАО",
   [TennisSiteId.SPORT_STANCIYA]: "ЮЗАО",
-  [TennisSiteId.FLY_TENNIS]: "СЗАО"
+  [TennisSiteId.FLY_TENNIS]: "СЗАО",
+  [TennisSiteId.ACE]: "СЗАО",
+  [TennisSiteId.BUD_ZOROV]: "ЮЗАО",
+  [TennisSiteId.LEGION]: "ЮВАО",
+  [TennisSiteId.PLAY_PARK]: "ЮЗАО",
+  [TennisSiteId.AVANTAGE]: "Подмосковье",
+  [TennisSiteId.ODINTSOVO_40_LOVE]: "Подмосковье",
+  [TennisSiteId.RAKETLON]: "ЮЗАО",
+  [TennisSiteId.TENNIS_ART]: "СВАО",
+  [TennisSiteId.TENNIS_PARK]: "ЮВАО",
+  [TennisSiteId.VTB_ARENA]: "САО"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
@@ -189,7 +239,9 @@ export const TENNIS_COURT_IS_CITY: Record<string, boolean> = {
   [TennisSiteId.ITC_MYTISCHY]: true,
   [TennisSiteId.IMPULS]: true,
   [TennisSiteId.VIDNYSPORT]: true,
-  [TennisSiteId.REZIDENCYA]: true
+  [TennisSiteId.REZIDENCYA]: true,
+  [TennisSiteId.AVANTAGE]: true,
+  [TennisSiteId.ODINTSOVO_40_LOVE]: true
 };
 
 // Маппинг кортов к локациям (теннис)
@@ -220,7 +272,17 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.REZIDENCYA]: ["moscow-region"],
   [TennisSiteId.TENNIS_RU]: ["south", "west", "moscow-region"],
   [TennisSiteId.SPORT_STANCIYA]: ["south"],
-  [TennisSiteId.FLY_TENNIS]: ["north", "west"]
+  [TennisSiteId.FLY_TENNIS]: ["north", "west"],
+  [TennisSiteId.ACE]: ["west", "north"],
+  [TennisSiteId.BUD_ZOROV]: ["south", "west"],
+  [TennisSiteId.LEGION]: ["south", "east"],
+  [TennisSiteId.PLAY_PARK]: ["south", "west"],
+  [TennisSiteId.AVANTAGE]: ["moscow-region"],
+  [TennisSiteId.ODINTSOVO_40_LOVE]: ["moscow-region"],
+  [TennisSiteId.RAKETLON]: ["south", "west"],
+  [TennisSiteId.TENNIS_ART]: ["north"],
+  [TennisSiteId.TENNIS_PARK]: ["south", "east"],
+  [TennisSiteId.VTB_ARENA]: ["west", "north"]
 };
 
 /**
