@@ -530,6 +530,9 @@ const pendingCourtSiteId = new Map<number, string>();
 // Временное хранилище ID редактируемого предложения
 const editingTransferId = new Map<number, string>();
 
+// Временное хранилище выбранных предложений для отмены (userId -> Set<transferId>)
+const selectedTransfersForCancel = new Map<number, Set<string>>();
+
 /**
  * Обновляет существующее предложение в Firestore
  */
@@ -1016,6 +1019,113 @@ function validateTransferText(text: string, user: TelegramBot.User): { text: str
   
   // Нет ни контакта в тексте, ни username - нужен дополнительный запрос
   return { text, needsContact: true };
+}
+
+/**
+ * Валидирует дату и время предложения
+ * @param dateStr Дата в формате "23.12" или "23.12.2024"
+ * @param timeStr Время в формате "18:00"
+ * @returns Объект с результатом валидации и сообщением об ошибке (если есть)
+ */
+function validateTransferDateTime(dateStr: string, timeStr: string): { isValid: boolean; errorMessage?: string } {
+  if (!dateStr || !timeStr) {
+    return { isValid: true }; // Если дата или время не указаны, пропускаем валидацию
+  }
+  
+  // Парсим дату
+  const parts = dateStr.split('.');
+  if (parts.length < 2) {
+    return { isValid: true }; // Неправильный формат даты - пропускаем, пусть другие валидаторы обработают
+  }
+  
+  const day = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1; // месяцы в JS начинаются с 0
+  
+  // Получаем сегодняшнюю дату (начало дня)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Определяем год: если не указан, проверяем, прошла ли эта дата в текущем году
+  let year: number;
+  if (parts[2]) {
+    year = parseInt(parts[2], 10);
+  } else {
+    // Год не указан - определяем логически
+    const currentYear = today.getFullYear();
+    const dateThisYear = new Date(currentYear, month, day);
+    
+    // Если дата в текущем году уже прошла (раньше сегодня), то это следующий год
+    if (dateThisYear < today) {
+      year = currentYear + 1;
+    } else {
+      year = currentYear;
+    }
+  }
+  
+  const inputDate = new Date(year, month, day);
+  if (isNaN(inputDate.getTime())) {
+    return { isValid: true }; // Неправильная дата - пропускаем
+  }
+  
+  // Получаем вчерашнюю дату (начало дня)
+  const yesterday = new Date();
+  yesterday.setHours(0, 0, 0, 0);
+  yesterday.setDate(yesterday.getDate() - 1);
+  
+  // Получаем дату предложения (начало дня)
+  const proposalDate = new Date(year, month, day);
+  proposalDate.setHours(0, 0, 0, 0);
+  
+  // Проверяем, что дата не раньше вчера
+  if (proposalDate < yesterday) {
+    return { 
+      isValid: false, 
+      errorMessage: '❌ Нельзя указать дату раньше чем вчера. Пожалуйста, укажите сегодняшнюю дату или позже.' 
+    };
+  }
+  
+  // Проверяем, что дата не больше чем через 14 дней
+  const maxDate = new Date(today);
+  maxDate.setDate(maxDate.getDate() + 14);
+  maxDate.setHours(23, 59, 59, 999);
+  
+  if (proposalDate > maxDate) {
+    return { 
+      isValid: false, 
+      errorMessage: '❌ Нельзя указать дату больше чем через 2 недели. Пожалуйста, укажите дату в пределах ближайших 14 дней.' 
+    };
+  }
+  
+  // Если дата сегодня, проверяем время
+  if (proposalDate.getTime() === today.getTime()) {
+    // Парсим время
+    const timeParts = timeStr.split(':');
+    if (timeParts.length !== 2) {
+      return { isValid: true }; // Неправильный формат времени - пропускаем
+    }
+    
+    const hours = parseInt(timeParts[0], 10);
+    const minutes = parseInt(timeParts[1], 10);
+    
+    if (isNaN(hours) || isNaN(minutes)) {
+      return { isValid: true }; // Неправильное время - пропускаем
+    }
+    
+    // Получаем текущее время
+    const now = new Date();
+    const currentHours = now.getHours();
+    const currentMinutes = now.getMinutes();
+    
+    // Проверяем, что время не раньше текущего
+    if (hours < currentHours || (hours === currentHours && minutes < currentMinutes)) {
+      return { 
+        isValid: false, 
+        errorMessage: '❌ Нельзя указать время раньше чем сейчас. Пожалуйста, укажите текущее время или позже.' 
+      };
+    }
+  }
+  
+  return { isValid: true };
 }
 
 // === Функции для работы со слотами ===
@@ -1545,7 +1655,7 @@ function groupSlotsByPrice(
   // Получаем цену для каждого слота из конфигурации
   const slotsWithPrice = slots.map(slot => {
     const [hours, minutes] = slot.time.split(':').map(Number);
-    const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+        const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
     const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
     let price = configPrice !== null ? configPrice : (slot.price || null);
     
@@ -1591,10 +1701,10 @@ function groupSlotsByPrice(
   const uniqueTimeSlots = Array.from(timeGroups.values()).sort((a, b) => {
     const [hoursA, minsA] = a.time.split(':').map(Number);
     const [hoursB, minsB] = b.time.split(':').map(Number);
-    if (hoursA !== hoursB) return hoursA - hoursB;
-    return minsA - minsB;
-  });
-
+        if (hoursA !== hoursB) return hoursA - hoursB;
+        return minsA - minsB;
+      });
+      
   // Теперь схлопываем соседние слоты с одинаковой ценой и длительностью
   const groups: GroupedSlot[] = [];
   let currentGroup: { startTime: string; endTime: string; duration: number | undefined; price: number | null } | null = null;
@@ -1663,8 +1773,56 @@ function getEndTime(startTime: string, duration: number | undefined): string {
 }
 
 /**
+ * Парсит длительность из строки (например, "1ч", "1 час", "1.5ч") в минуты
+ */
+function parseDurationToMinutes(durationStr: string | undefined): number | undefined {
+  if (!durationStr) return undefined;
+  
+  // Убираем пробелы и приводим к нижнему регистру
+  const cleaned = durationStr.trim().toLowerCase();
+  
+  // Ищем числа (включая десятичные)
+  const match = cleaned.match(/(\d+(?:\.\d+)?)/);
+  if (!match) return undefined;
+  
+  const hours = parseFloat(match[1]);
+  if (isNaN(hours)) return undefined;
+  
+  // Если есть "ч" или "час", это часы, иначе считаем минутами
+  if (cleaned.includes('ч') || cleaned.includes('час')) {
+    return Math.round(hours * 60);
+  }
+  
+  // Иначе считаем, что это минуты
+  return Math.round(hours);
+}
+
+/**
  * Форматирует одну страницу слотов для отображения пользователю
  */
+/**
+ * Преобразует дату из формата "23.12" или "23.12.2024" в формат "YYYY-MM-DD"
+ */
+function parseTransferDateToDateKey(dateStr: string): string | null {
+  const parts = dateStr.split('.');
+  if (parts.length < 2) return null;
+  
+  const day = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  const year = parts[2] ? parseInt(parts[2], 10) : new Date().getFullYear();
+  
+  // Если год не указан и дата в прошлом месяце, используем следующий год
+  if (!parts[2]) {
+    const now = new Date();
+    const inputDate = new Date(year, month - 1, day);
+    if (inputDate < now && inputDate.getMonth() < now.getMonth()) {
+      return `${year + 1}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+  
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
 function formatSlotsPage(
   date: string,
   siteSlots: { siteName: string; slots: Slot[] }[],
@@ -1673,7 +1831,8 @@ function formatSlotsPage(
   pageSize: number = 5,
   lastUpdated: string | undefined,
   dateKey: string, // Дата в формате YYYY-MM-DD для расчета цен
-  favoriteCourts: string[] = [] // Массив ID избранных кортов
+  favoriteCourts: string[] = [], // Массив ID избранных кортов
+  transfers: CourtTransfer[] = [] // Активные переуступки для подмешивания
 ): string {
   if (siteSlots.length === 0) {
     const emoji = sport === SportType.PADEL ? '🏓' : '🎾';
@@ -1763,6 +1922,66 @@ function formatSlotsPage(
       slotInfo += '\n';
       
       message += slotInfo;
+    }
+    
+    // Подмешиваем переуступки для этого корта
+    const courtTransfers = transfers.filter(transfer => {
+      // Проверяем по courtSiteId
+      if (transfer.courtSiteId && transfer.courtSiteId === siteName) {
+        const parsed = parseFullTransferText(transfer.text);
+        const transferDateKey = parseTransferDateToDateKey(parsed.date);
+        return transferDateKey === dateKey;
+      }
+      
+      // Проверяем по названию корта (fuzzy match)
+      const parsed = parseFullTransferText(transfer.text);
+      const transferDateKey = parseTransferDateToDateKey(parsed.date);
+      if (transferDateKey !== dateKey) {
+        return false;
+      }
+      
+      // Сравниваем название корта
+      const transferCourtName = parsed.court.toLowerCase().trim();
+      const displayNameLower = displayName.toLowerCase().trim();
+      
+      // Точное совпадение или частичное (если название переуступки содержится в названии корта или наоборот)
+      return transferCourtName === displayNameLower || 
+             displayNameLower.includes(transferCourtName) || 
+             transferCourtName.includes(displayNameLower);
+    });
+    
+    // Добавляем переуступки после слотов
+    for (const transfer of courtTransfers) {
+      const parsed = parseFullTransferText(transfer.text);
+      
+      // Формируем информацию о переуступке в новом формате
+      let transferInfo = '🏷️ *Переуступка*: ';
+      
+      // Вычисляем время окончания
+      if (parsed.time) {
+        const durationMinutes = parseDurationToMinutes(parsed.duration);
+        const endTime = getEndTime(parsed.time, durationMinutes);
+        transferInfo += `${parsed.time}–${endTime}`;
+      } else {
+        transferInfo += '—';
+      }
+      
+      // Добавляем цену (убираем возможные символы ₽ из строки)
+      if (parsed.price) {
+        const priceCleaned = parsed.price.replace(/₽/g, '').trim();
+        transferInfo += ` — ${priceCleaned}₽`;
+      }
+      
+      // Добавляем контакт в скобках
+      if (parsed.contact) {
+        // Экранируем подчеркивания для Markdown
+        const contactEscaped = parsed.contact.replace(/_/g, '\\_');
+        transferInfo += ` (контакт: ${contactEscaped})`;
+      }
+      
+      transferInfo += '\n';
+      
+      message += transferInfo;
     }
     
     message += '\n';
@@ -2237,6 +2456,9 @@ async function handleMessage(msg: TelegramBot.Message) {
     return;
   }
 
+  // Если нет текста, выходим
+  if (!text) return;
+
   switch (text) {
     case '🎾 Найти корт (теннис)':
       // Отслеживаем клик на текстовую кнопку
@@ -2378,6 +2600,7 @@ async function handleMessage(msg: TelegramBot.Message) {
       await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
       break;
     case '🔥 Горячие предложения':
+      try {
       // Отслеживаем клик на текстовую кнопку
       if (userId) {
         trackButtonClick({
@@ -2402,19 +2625,19 @@ async function handleMessage(msg: TelegramBot.Message) {
       const userTransfers = userId ? await getUserTransfers(userId, true) : [];
       
       if (userTransfers.length > 0) {
-        // Есть активные переуступки - показываем список и кнопки
-        let message = 'У тебя есть активные предложения:\n\n';
-        userTransfers.forEach((transfer, idx) => {
-          const formatted = formatTransfer(transfer);
-          message += `${idx + 1}. ${formatted}\n\n`;
-        });
-        
-        await getBot().sendMessage(chatId, message, {
-          parse_mode: 'Markdown',
-          disable_web_page_preview: true,
+          // Есть активные переуступки - показываем список и кнопки
+          let message = 'У тебя есть активные предложения:\n\n';
+          userTransfers.forEach((transfer, idx) => {
+            const formatted = formatTransfer(transfer);
+            message += `${idx + 1}. ${formatted}\n\n`;
+          });
+          
+          await getBot().sendMessage(chatId, message, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
           reply_markup: {
             inline_keyboard: [
-              [{ text: '➕ Разместить ещё', callback_data: 'transfer_create' }],
+                [{ text: '➕ Разместить ещё', callback_data: 'transfer_create' }],
               [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
               [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
             ]
@@ -2423,6 +2646,10 @@ async function handleMessage(msg: TelegramBot.Message) {
       } else {
         // Нет активных переуступок - показываем список всех предложений
         await handleShowAllTransfers(chatId, userId || 0);
+        }
+      } catch (error) {
+        console.error('Ошибка при обработке "Горячие предложения":', error);
+        await getBot().sendMessage(chatId, '❌ Произошла ошибка при загрузке предложений. Попробуйте позже.');
       }
       break;
     // case '👤 Профиль':
@@ -2459,6 +2686,16 @@ async function handleMessage(msg: TelegramBot.Message) {
     
     // Валидируем текст переуступки
     const validation = validateTransferText(text, msg.from!);
+    
+    // Парсим дату и время для валидации
+    const parsed = parseFullTransferText(validation.text);
+    
+    // Валидируем дату и время
+    const dateTimeValidation = validateTransferDateTime(parsed.date, parsed.time);
+    if (!dateTimeValidation.isValid) {
+      await getBot().sendMessage(chatId, dateTimeValidation.errorMessage || '❌ Ошибка валидации даты и времени.');
+      return;
+    }
     
     // Валидируем название корта
     const courtName = extractCourtName(validation.text);
@@ -2552,6 +2789,20 @@ async function handleMessage(msg: TelegramBot.Message) {
       pendingCourtSiteId.delete(userId);
       editingTransferId.delete(userId);
       await getBot().sendMessage(chatId, '❌ Произошла ошибка. Попробуйте разместить предложение заново.');
+      return;
+    }
+    
+    // Парсим дату и время из сохраненного текста для валидации
+    const parsed = parseFullTransferText(savedText);
+    
+    // Валидируем дату и время
+    const dateTimeValidation = validateTransferDateTime(parsed.date, parsed.time);
+    if (!dateTimeValidation.isValid) {
+      waitingForContact.delete(userId);
+      pendingTransferText.delete(userId);
+      pendingCourtSiteId.delete(userId);
+      editingTransferId.delete(userId);
+      await getBot().sendMessage(chatId, dateTimeValidation.errorMessage || '❌ Ошибка валидации даты и времени.');
       return;
     }
     
@@ -2801,6 +3052,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           searchState.totalPages = totalPages;
           searchStates.set(userId, searchState);
           
+          // Получаем активные переуступки для подмешивания (только для тенниса)
+          const transfers = searchState.sport === SportType.TENNIS ? await getAllActiveTransfers() : [];
+          
           // Форматируем первую страницу
           const message = formatSlotsPage(
             searchState.dateStr,
@@ -2810,7 +3064,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             pageSize,
             slotsData.lastUpdated,
             searchState.date,
-            favoriteCourts
+            favoriteCourts,
+            transfers
           );
           
           const messageId = query.message?.message_id;
@@ -3653,6 +3908,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     searchState.currentPage = page;
     searchStates.set(userId, searchState);
     
+    // Получаем активные переуступки для подмешивания (только для тенниса)
+    const transfers = searchState.sport === SportType.TENNIS ? await getAllActiveTransfers() : [];
+    
     // Форматируем страницу
     const pageSize = 5;
     const message = formatSlotsPage(
@@ -3663,7 +3921,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       pageSize,
       searchState.lastUpdated,
       searchState.date,
-      favoriteCourts
+      favoriteCourts,
+      transfers
     );
     
     // Обновляем сообщение
@@ -3699,6 +3958,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const totalPages = searchState.totalPages || 1;
     const currentPage = 1;
     
+    // Получаем активные переуступки для подмешивания (только для тенниса)
+    const transfers = searchState.sport === SportType.TENNIS ? await getAllActiveTransfers() : [];
+    
     // Форматируем первую страницу альтернатив
     const message = formatSlotsPage(
       searchState.dateStr,
@@ -3708,7 +3970,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       pageSize,
       searchState.lastUpdated,
       searchState.date,
-      favoriteCourts
+      favoriteCourts,
+      transfers
     );
     
     const messageId = query.message?.message_id;
@@ -3790,9 +4053,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
       waitingForTransfer.add(userId);
       try {
-        await getBot().sendMessage(chatId, rulesText, {
-          parse_mode: 'HTML'
-        });
+      await getBot().sendMessage(chatId, rulesText, {
+        parse_mode: 'HTML'
+      });
       } catch (error) {
         console.error('Ошибка при отправке сообщения с правилами (Markdown):', error);
         // Пробуем отправить без форматирования в случае ошибки
@@ -3829,27 +4092,40 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         const transfer = userTransfers[0];
         if (transfer.id) {
           await cancelTransferById(transfer.id);
-          await getBot().sendMessage(chatId, '✅ Предложение отменено.');
+      await getBot().sendMessage(chatId, '✅ Предложение отменено.');
         }
         return;
       }
       
-      // Если несколько предложений - показываем выбор
-      let message = 'Выбери предложение для отмены:\n\n';
+      // Если несколько предложений - показываем выбор с возможностью выбрать несколько
+      // Инициализируем Set выбранных предложений, если его еще нет
+      if (!selectedTransfersForCancel.has(userId)) {
+        selectedTransfersForCancel.set(userId, new Set());
+      }
+      
+      const selectedIds = selectedTransfersForCancel.get(userId)!;
+      let message = 'Выбери предложения для отмены (можно выбрать несколько):\n\n';
       const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
       
       userTransfers.forEach((transfer, idx) => {
         const parsed = parseFullTransferText(transfer.text);
-        // Формат: "1. Спартак, 23.12, 18:00"
-        let buttonText = `${idx + 1}. ${parsed.court}`;
+        // Формат: "☑️ 1. Спартак, 23.12, 18:00" или "☐ 1. Спартак, 23.12, 18:00"
+        const isSelected = transfer.id && selectedIds.has(transfer.id);
+        const checkbox = isSelected ? '☑️' : '☐';
+        let buttonText = `${checkbox} ${idx + 1}. ${parsed.court}`;
         if (parsed.date) {
           buttonText += `, ${parsed.date}`;
         }
         if (parsed.time) {
           buttonText += `, ${parsed.time}`;
         }
-        keyboard.push([{ text: buttonText, callback_data: `transfer_cancel_id_${transfer.id}` }]);
+        keyboard.push([{ text: buttonText, callback_data: `transfer_cancel_toggle_${transfer.id}` }]);
       });
+      
+      // Кнопка отменить выбранные (только если есть выбранные)
+      if (selectedIds.size > 0) {
+        keyboard.push([{ text: `✅ Отменить выбранные (${selectedIds.size})`, callback_data: 'transfer_cancel_selected' }]);
+      }
       
       keyboard.push([{ text: '◀️ Назад', callback_data: 'transfer_view_all' }]);
       
@@ -3861,16 +4137,104 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     
-    if (data?.startsWith('transfer_cancel_id_')) {
-      // Отмена конкретного предложения по ID
-      const transferId = data.replace('transfer_cancel_id_', '');
+    if (data?.startsWith('transfer_cancel_toggle_')) {
+      // Переключение выбора предложения для отмены
+      const transferId = data.replace('transfer_cancel_toggle_', '');
       
-      const cancelled = await cancelTransferById(transferId);
+      // Инициализируем Set, если его еще нет
+      if (!selectedTransfersForCancel.has(userId)) {
+        selectedTransfersForCancel.set(userId, new Set());
+      }
       
-      if (cancelled) {
-        await getBot().sendMessage(chatId, '✅ Предложение отменено.');
+      const selectedIds = selectedTransfersForCancel.get(userId)!;
+      
+      // Переключаем выбор
+      if (selectedIds.has(transferId)) {
+        selectedIds.delete(transferId);
       } else {
-        await getBot().sendMessage(chatId, '❌ Произошла ошибка при отмене предложения.');
+        selectedIds.add(transferId);
+      }
+      
+      // Получаем актуальный список предложений и обновляем сообщение
+      const userTransfers = await getUserTransfers(userId, true);
+      
+      if (userTransfers.length === 0) {
+        selectedTransfersForCancel.delete(userId);
+        await getBot().sendMessage(chatId, 'У тебя нет активных предложений для отмены.');
+        return;
+      }
+      
+      let message = 'Выбери предложения для отмены (можно выбрать несколько):\n\n';
+      const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+      
+      userTransfers.forEach((transfer, idx) => {
+        const parsed = parseFullTransferText(transfer.text);
+        const isSelected = transfer.id && selectedIds.has(transfer.id);
+        const checkbox = isSelected ? '☑️' : '☐';
+        let buttonText = `${checkbox} ${idx + 1}. ${parsed.court}`;
+        if (parsed.date) {
+          buttonText += `, ${parsed.date}`;
+        }
+        if (parsed.time) {
+          buttonText += `, ${parsed.time}`;
+        }
+        keyboard.push([{ text: buttonText, callback_data: `transfer_cancel_toggle_${transfer.id}` }]);
+      });
+      
+      // Кнопка отменить выбранные (только если есть выбранные)
+      if (selectedIds.size > 0) {
+        keyboard.push([{ text: `✅ Отменить выбранные (${selectedIds.size})`, callback_data: 'transfer_cancel_selected' }]);
+      }
+      
+      keyboard.push([{ text: '◀️ Назад', callback_data: 'transfer_view_all' }]);
+      
+      // Обновляем сообщение
+      const messageId = query.message?.message_id;
+      if (messageId) {
+        await safeEditMessageText(message, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: keyboard
+          }
+        });
+      }
+      return;
+    }
+    
+    if (data === 'transfer_cancel_selected') {
+      // Отмена всех выбранных предложений
+      const selectedIds = selectedTransfersForCancel.get(userId);
+      
+      if (!selectedIds || selectedIds.size === 0) {
+        await getBot().sendMessage(chatId, '❌ Не выбрано ни одного предложения для отмены.');
+        return;
+      }
+      
+      // Отменяем все выбранные предложения
+      let successCount = 0;
+      let failCount = 0;
+      
+      for (const transferId of selectedIds) {
+        const cancelled = await cancelTransferById(transferId);
+        if (cancelled) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      }
+      
+      // Очищаем выбранные предложения
+      selectedTransfersForCancel.delete(userId);
+      
+      // Отправляем результат
+      if (failCount === 0) {
+        const messageText = successCount === 1 
+          ? '✅ Предложение отменено.'
+          : `✅ Отменено предложений: ${successCount}.`;
+        await getBot().sendMessage(chatId, messageText);
+      } else {
+        await getBot().sendMessage(chatId, `✅ Отменено: ${successCount}. ❌ Ошибок: ${failCount}.`);
       }
       return;
     }
@@ -3954,6 +4318,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     if (data === 'transfer_view_all') {
       // Посмотреть все предложения
+      selectedTransfersForCancel.delete(userId); // Очищаем выбранные при переходе
       await handleShowAllTransfers(chatId, userId);
       return;
     }
@@ -4018,6 +4383,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       pendingTransferText.delete(userId);
       pendingCourtSiteId.delete(userId);
       editingTransferId.delete(userId);
+      selectedTransfersForCancel.delete(userId);
       
       await getBot().sendMessage(chatId, '❌ Ввод отменен.');
       return;
