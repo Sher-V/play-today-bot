@@ -3,4 +3,5 @@
 
 export { telegramWebhook, playTodayBot } from './index';
 export { slotsFetcher, fetchSlots } from './functions/slots-fetcher/slots-fetcher';
+export { broadcastMessage } from './functions/broadcast-message';
 
