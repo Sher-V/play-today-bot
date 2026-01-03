@@ -16,42 +16,59 @@ const SYNONYMS: Array<[RegExp, string]> = [
   [/\bлужники\b/giu, "luzhniki"],
   [/\bwe\s*gym\b/giu, "wegym"],
   [/\bitc\b/giu, "itc"],
+  [/галерея/giu, "gallery"],
+  [/галлерея/giu, "gallery"],
+  [/gallery/giu, "gallery"],
   [/\bтеннис\s*капитал\b/giu, "tennis capital"],
   [/\bтэннис\s*капитал\b/giu, "tennis capital"],
   [/\bтеннис77\b/giu, "tennis77"],
+  
+  // PRO TENNIS aliases
+  [/про\s*теннис/giu, "pro tennis каширке"],
+  [/pro\s*tennis/giu, "pro tennis каширке"],
 
   // tennis.ru aliases
-  [/\bтеннис\s*ру\b/giu, "tennisru"],
-  [/\bтеннис\.ру\b/giu, "tennisru"],
-  [/\btennis\s*ru\b/giu, "tennisru"],
-  [/\btennis\.ru\b/giu, "tennisru"],
+  [/теннис\s*ру/giu, "tennis ru"],
+  [/теннис\.ру/giu, "tennis ru"],
+  [/tennis\s*ru/giu, "tennis ru"],
+  [/tennis\.ru/giu, "tennis ru"],
   
   // новые корты без онлайн бронирования
-  [/\bэйс\b/giu, "ace"],
-  [/\bace\b/giu, "ace"],
+  [/эйс/giu, "ace"],
+  [/ace/giu, "ace"],
   [/\bбудь\s*здоров\b/giu, "bud zorov"],
   [/\bлегион\b/giu, "legion"],
-  [/\bплэй\s*парк\b/giu, "play park"],
-  [/\bplay\s*park\b/giu, "play park"],
-  [/\bавантаж\b/giu, "avantage"],
+  [/плэй\s*парк/giu, "play park"],
+  [/play\s*park/giu, "play park"],
+  [/авантаж/giu, "avantage"],
+  [/avantage/giu, "avantage"],
   [/\bодинцово\s*40\s*love\b/giu, "odintsovo 40 love"],
   [/\b40\s*love\b/giu, "40 love"],
-  [/\bракетлон\b/giu, "raketlon"],
-  [/\bтеннис\s*арт\b/giu, "tennis art"],
-  [/\bтеннис\s*парк\b/giu, "tennis park"],
+  [/ракетлон/giu, "raketlon"],
+  [/raketlon/giu, "raketlon"],
+  [/теннис\s*арт/giu, "tennis art"],
+  [/теннис\s*парк/giu, "tennis park"],
+  [/tennis\s*art/giu, "tennis art"],
+  [/tennis\s*park/giu, "tennis park"],
   [/\bвтб\s*арена\b/giu, "vtb arena"],
   [/\bдинамо\b/giu, "dinamo"],
+  
+  // Fly Tennis aliases
+  [/флай\s*теннис/giu, "fly tennis"],
+  [/флайтеннис/giu, "fly tennis"],
+  [/fly\s*tennis/giu, "fly tennis"],
+  [/flytennis/giu, "fly tennis"],
 ];
 
 function normalizeName(s: string): string {
   let t = (s ?? "").trim().toLowerCase().replace(/ё/g, "е");
 
-  // оставить буквы/цифры/пробел
+  // Сначала применяем синонимы/алиасы (до удаления знаков препинания)
+  for (const [re, rep] of SYNONYMS) t = t.replace(re, rep);
+
+  // Затем оставляем только буквы/цифры/пробел
   t = t.replace(/[^a-zа-я0-9\s]+/giu, " ");
   t = t.replace(/\s+/g, " ").trim();
-
-  // синонимы/алиасы
-  for (const [re, rep] of SYNONYMS) t = t.replace(re, rep);
 
   // лёгкие стоп-слова
   const tokens = t.split(" ").filter(tok => tok && !RU_STOPWORDS_LIGHT.has(tok));

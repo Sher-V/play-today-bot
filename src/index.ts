@@ -379,20 +379,21 @@ async function handleFavoritesRequest(chatId: number, userId: number): Promise<v
  * Отображает все активные переуступки с пагинацией
  */
 async function handleShowAllTransfers(chatId: number, userId: number, page: number = 1, pageSize: number = 10): Promise<void> {
-  // Получаем все активные переуступки из Firestore
-  const allTransfers = await getAllActiveTransfers();
-  
-  if (allTransfers.length === 0) {
-    // Нет предложений - показываем кнопку разместить
-    await getBot().sendMessage(chatId, 'Пока нет активных предложений. Будь первым!', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '➕ Разместить ещё', callback_data: 'transfer_create' }]
-        ]
-      }
-    });
-    return;
-  }
+  try {
+    // Получаем все активные переуступки из Firestore
+    const allTransfers = await getAllActiveTransfers();
+    
+    if (allTransfers.length === 0) {
+      // Нет предложений - показываем кнопку разместить
+      await getBot().sendMessage(chatId, 'Пока нет активных предложений. Будь первым!', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ Разместить ещё', callback_data: 'transfer_create' }]
+          ]
+        }
+      });
+      return;
+    }
   
   // Вычисляем пагинацию
   const totalPages = Math.ceil(allTransfers.length / pageSize);
@@ -441,13 +442,20 @@ async function handleShowAllTransfers(chatId: number, userId: number, page: numb
     );
   }
   
-  await getBot().sendMessage(chatId, message, {
-    parse_mode: 'Markdown',
-    disable_web_page_preview: true,
-    reply_markup: {
-      inline_keyboard: keyboard
+    await getBot().sendMessage(chatId, message, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      reply_markup: {
+        inline_keyboard: keyboard
+      }
+    });
+  } catch (error) {
+    console.error('Ошибка в handleShowAllTransfers:', error);
+    if (error instanceof Error) {
+      console.error('Детали ошибки:', error.message, error.stack);
     }
-  });
+    throw error; // Пробрасываем ошибку дальше, чтобы её обработал вызывающий код
+  }
 }
 
 // Опции районов
@@ -1656,7 +1664,7 @@ function groupSlotsByPrice(
   const slotsWithPrice = slots.map(slot => {
     const [hours, minutes] = slot.time.split(':').map(Number);
         const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
-    const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
+        const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
     let price = configPrice !== null ? configPrice : (slot.price || null);
     
     // Если слот имеет длительность 30 минут, умножаем цену на 2, чтобы показать цену за 1 час
@@ -2568,8 +2576,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       // Показываем меню профиля с кнопкой избранных кортов
       await getBot().sendMessage(chatId, '👤 Профиль', {
-        reply_markup: {
-          inline_keyboard: [
+              reply_markup: {
+                inline_keyboard: [
             [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
             [{ text: '◀️ Назад', callback_data: 'action_home' }]
           ]
@@ -2601,30 +2609,30 @@ async function handleMessage(msg: TelegramBot.Message) {
       break;
     case '🔥 Горячие предложения':
       try {
-      // Отслеживаем клик на текстовую кнопку
-      if (userId) {
-        trackButtonClick({
-          userId,
-          userName: msg.from?.first_name || msg.from?.username || undefined,
-          chatId,
-          buttonType: 'text',
-          buttonId: text,
-          buttonLabel: text,
-          sessionId: generateSessionId(userId),
-          context: {
-            command: 'hot_offers',
-            username: msg.from?.username,
-            languageCode: msg.from?.language_code,
-          },
-        }).catch(err => {
-          console.error('Error tracking button click:', err);
-        });
-      }
-      
-      // Проверяем, есть ли у пользователя активные переуступки
-      const userTransfers = userId ? await getUserTransfers(userId, true) : [];
-      
-      if (userTransfers.length > 0) {
+        // Отслеживаем клик на текстовую кнопку
+        if (userId) {
+          trackButtonClick({
+            userId,
+            userName: msg.from?.first_name || msg.from?.username || undefined,
+            chatId,
+            buttonType: 'text',
+            buttonId: text,
+            buttonLabel: text,
+            sessionId: generateSessionId(userId),
+            context: {
+              command: 'hot_offers',
+              username: msg.from?.username,
+              languageCode: msg.from?.language_code,
+            },
+          }).catch(err => {
+            console.error('Error tracking button click:', err);
+          });
+        }
+        
+        // Проверяем, есть ли у пользователя активные переуступки
+        const userTransfers = userId ? await getUserTransfers(userId, true) : [];
+        
+        if (userTransfers.length > 0) {
           // Есть активные переуступки - показываем список и кнопки
           let message = 'У тебя есть активные предложения:\n\n';
           userTransfers.forEach((transfer, idx) => {
@@ -2635,20 +2643,23 @@ async function handleMessage(msg: TelegramBot.Message) {
           await getBot().sendMessage(chatId, message, {
             parse_mode: 'Markdown',
             disable_web_page_preview: true,
-          reply_markup: {
-            inline_keyboard: [
+            reply_markup: {
+              inline_keyboard: [
                 [{ text: '➕ Разместить ещё', callback_data: 'transfer_create' }],
-              [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
-              [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
-            ]
-          }
-        });
-      } else {
-        // Нет активных переуступок - показываем список всех предложений
-        await handleShowAllTransfers(chatId, userId || 0);
+                [{ text: '❌ Отменить', callback_data: 'transfer_cancel' }, { text: '✏️ Изменить', callback_data: 'transfer_edit' }],
+                [{ text: '👀 Посмотреть все предложения', callback_data: 'transfer_view_all' }]
+              ]
+            }
+          });
+        } else {
+          // Нет активных переуступок - показываем список всех предложений
+          await handleShowAllTransfers(chatId, userId || 0);
         }
       } catch (error) {
         console.error('Ошибка при обработке "Горячие предложения":', error);
+        if (error instanceof Error) {
+          console.error('Детали ошибки:', error.message, error.stack);
+        }
         await getBot().sendMessage(chatId, '❌ Произошла ошибка при загрузке предложений. Попробуйте позже.');
       }
       break;
@@ -4042,12 +4053,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const rulesText = `Заполни своё предложение по шаблону ниже:
 <i>Клуб, покрытие, дата, время, длительность, цена, контакт</i>
 
-<b>Пример:</b>
-<i>Спартак, хард, 23.12, 18:00, 1ч, 1800₽, @play_today_chat</i>
-
 <b>Пару правил:</b>
 ✅ Если корт забрали — нажми «Отменить предложение»
 💸 Если сделаешь чуть дешевле — быстрее заберут
+
+<b>Пример:</b>
+<i>Спартак, хард, 23.12, 18:00, 1ч, 1800₽, @play_today_chat</i>
 
 Напиши своё предложение 👇`;
 
@@ -4063,14 +4074,14 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
 Клуб, покрытие, дата, время, длительность, цена, контакт
 
-Пример:
-Спартак, хард, 23.12, 18:00, 1ч, 1800₽, @play_today_chat
-
 Пару правил:
 
 ✅ Если корт забрали — нажми «Отменить предложение»
 
 💸 Если сделаешь чуть дешевле — быстрее заберут
+
+Пример:
+Спартак, хард, 23.12, 18:00, 1ч, 1800₽, @play_today_chat
 
 Напиши своё предложение 👇`;
         await getBot().sendMessage(chatId, rulesTextPlain);

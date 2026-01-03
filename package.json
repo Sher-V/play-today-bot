@@ -16,7 +16,8 @@
     "delete-webhook": "curl -X POST \"https://api.telegram.org/bot$BOT_TOKEN/deleteWebhook\"",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "ts-node src/utils/court-matcher.test.ts",
+    "test:court-matcher": "ts-node src/utils/court-matcher.test.ts"
   },
   "keywords": [],
   "author": "",
