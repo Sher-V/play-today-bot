@@ -644,6 +644,64 @@ function getUpdateFrequency(sport: Sport, dateKey?: string): string {
   return 'каждые 20 минут';
 }
 
+/**
+ * Объединяет соседние времена в диапазоны
+ * Например: [14:00, 15:00, 16:00, 17:00, 18:00, 19:00, 20:00, 21:00, 22:00] -> ["14:00 – 22:00"]
+ */
+function mergeConsecutiveTimes(times: string[]): string[] {
+  if (times.length === 0) return [];
+  if (times.length === 1) return times;
+  
+  const result: string[] = [];
+  let rangeStart: string | null = null;
+  let rangeEnd: string | null = null;
+  
+  // Преобразуем время в минуты для сравнения
+  const timeToMinutes = (time: string): number => {
+    const [hours, minutes] = time.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+  
+  for (let i = 0; i < times.length; i++) {
+    const currentTime = times[i];
+    const currentMinutes = timeToMinutes(currentTime);
+    
+    if (rangeStart === null) {
+      // Начало нового диапазона
+      rangeStart = currentTime;
+      rangeEnd = currentTime;
+    } else {
+      const prevMinutes = timeToMinutes(rangeEnd!);
+      const diff = currentMinutes - prevMinutes;
+      
+      // Если разница 60 минут (1 час) - это соседние слоты, продолжаем диапазон
+      if (diff === 60) {
+        rangeEnd = currentTime;
+      } else {
+        // Разрыв в диапазоне - сохраняем текущий диапазон и начинаем новый
+        if (rangeStart === rangeEnd) {
+          result.push(rangeStart);
+        } else {
+          result.push(`${rangeStart} – ${rangeEnd}`);
+        }
+        rangeStart = currentTime;
+        rangeEnd = currentTime;
+      }
+    }
+  }
+  
+  // Добавляем последний диапазон
+  if (rangeStart !== null) {
+    if (rangeStart === rangeEnd) {
+      result.push(rangeStart);
+    } else {
+      result.push(`${rangeStart} – ${rangeEnd}`);
+    }
+  }
+  
+  return result;
+}
+
 function formatFavoriteCourtsSlots(
   courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>>,
   lastUpdated: string | undefined,
@@ -755,24 +813,65 @@ function formatFavoriteCourtsSlots(
     for (const { date, dateKey, slots } of datesData) {
       if (slots.length === 0) continue;
       
-      // Группируем слоты по цене и длительности (дубли по времени уже обрабатываются внутри функции)
-      const groupedSlots = groupSlotsByPrice(slots, siteName, dateKey);
+      // Форматируем дату в короткий формат (например, "27 дек")
+      const dateShort = formatDateShort(dateKey);
       
-      // Форматируем сгруппированные слоты
-      for (const group of groupedSlots) {
-        // Всегда вычисляем время окончания и показываем диапазон
-        const endTime = getEndTime(group.endTime, group.duration);
-        const timeRange = `${group.startTime}–${endTime}`;
+      // Собираем уникальные времена начала и все цены для этой даты
+      const uniqueTimes = new Set<string>();
+      const prices: number[] = [];
+      
+      // Получаем цену для каждого слота
+      for (const slot of slots) {
+        const [hours, minutes] = slot.time.split(':').map(Number);
+        const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+        const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
+        let price = configPrice !== null ? configPrice : (slot.price || null);
         
-        // Формируем строку с информацией о слоте
-        let slotInfo = `🕒 ${timeRange}`;
-        if (group.price !== null) {
-          slotInfo += ` — ${group.price}₽`;
+        // Если слот имеет длительность 30 минут, умножаем цену на 2, чтобы показать цену за 1 час
+        if (price !== null && slot.duration === 30) {
+          price = price * 2;
         }
-        slotInfo += '\n';
         
-        message += slotInfo;
+        // Добавляем время начала слота
+        uniqueTimes.add(slot.time);
+        
+        // Добавляем цену, если она есть
+        if (price !== null) {
+          prices.push(price);
+        }
       }
+      
+      // Сортируем времена
+      const sortedTimes = Array.from(uniqueTimes).sort((a, b) => {
+        const [hoursA, minsA] = a.split(':').map(Number);
+        const [hoursB, minsB] = b.split(':').map(Number);
+        if (hoursA !== hoursB) return hoursA - hoursB;
+        return minsA - minsB;
+      });
+      
+      if (sortedTimes.length === 0) continue;
+      
+      // Объединяем соседние времена в диапазоны
+      const mergedTimes = mergeConsecutiveTimes(sortedTimes);
+      
+      // Формируем строку с датой и временами (дата выделена жирным)
+      let dateLine = `*${dateShort}* — ${mergedTimes.join(' · ')}`;
+      
+      // Добавляем информацию о ценах
+      if (prices.length > 0) {
+        const minPrice = Math.min(...prices);
+        const maxPrice = Math.max(...prices);
+        
+        if (minPrice === maxPrice) {
+          // Одна цена
+          dateLine += ` — ${minPrice} ₽`;
+        } else {
+          // Диапазон цен
+          dateLine += ` — ${minPrice}–${maxPrice} ₽`;
+        }
+      }
+      
+      message += dateLine + '\n';
     }
     
     message += '\n';
