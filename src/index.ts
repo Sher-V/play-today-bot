@@ -60,6 +60,7 @@ interface SlotsData {
 
 // Cloud Storage настройки
 const BUCKET_NAME = process.env.GCS_BUCKET;
+const COACH_MEDIA_BUCKET = process.env.COACH_MEDIA_BUCKET;
 const USE_PROD_ACTUAL_SLOTS = process.env.USE_PROD_ACTUAL_SLOTS === 'true';
 // Функция для получения имени файла по дате
 function getSlotsFileName(sport: Sport, date: string): string {
@@ -71,10 +72,212 @@ function getSlotsLocalPath(sport: Sport, date: string): string {
 }
 // Если USE_PROD_ACTUAL_SLOTS=true, всегда используем Cloud Storage (требуется BUCKET_NAME)
 const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
-const storage = (USE_PROD_ACTUAL_SLOTS || BUCKET_NAME) ? new Storage() : null;
+// Storage инициализируем всегда (нужен для загрузки медиа тренеров)
+const storage = new Storage();
 
 // Режим работы: dev (polling) или prod (webhook)
 const isDev = process.env.NODE_ENV === 'development';
+
+/**
+ * Загружает медиа файл в Cloud Storage
+ * @param fileId - file_id от Telegram
+ * @param userId - ID пользователя
+ * @param fileType - тип файла (photo или video)
+ * @returns URL файла в Cloud Storage или null в случае ошибки
+ */
+/**
+ * Создает задачу для загрузки видео в GCS в фоне (через Cloud Tasks или HTTP запрос)
+ */
+async function createVideoUploadTask(fileId: string, userId: number): Promise<boolean> {
+  try {
+    const BOT_TOKEN = isDev ? process.env.BOT_TOKEN_DEV : process.env.BOT_TOKEN;
+
+    if (!BOT_TOKEN) {
+      console.error('[createVideoUploadTask] Bot token not found');
+      return false;
+    }
+
+    const payload = {
+      fileId,
+      userId,
+      botToken: BOT_TOKEN
+    };
+
+    // В dev-режиме делаем прямой HTTP запрос к локальной функции
+    if (isDev) {
+      const localFunctionUrl = process.env.VIDEO_UPLOAD_FUNCTION_URL || 'http://localhost:8081';
+      
+      console.log(`[createVideoUploadTask] Dev mode: sending HTTP request to ${localFunctionUrl}`);
+      
+      // Делаем запрос в фоне, не ждем ответа
+      fetch(localFunctionUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+        .then(response => {
+          if (response.ok) {
+            console.log(`[createVideoUploadTask] Local function accepted the request`);
+          } else {
+            console.error(`[createVideoUploadTask] Local function error: ${response.status}`);
+          }
+        })
+        .catch(error => {
+          console.error('[createVideoUploadTask] Failed to call local function:', error.message);
+        });
+      
+      return true;
+    }
+
+    // В production используем Cloud Tasks
+    const { CloudTasksClient } = await import('@google-cloud/tasks');
+    const client = new CloudTasksClient();
+
+    const projectId = process.env.GCP_PROJECT || process.env.GCLOUD_PROJECT;
+    const location = process.env.CLOUD_TASKS_LOCATION || 'europe-west1';
+    const queue = process.env.CLOUD_TASKS_QUEUE || 'video-upload-queue';
+    const functionUrl = process.env.VIDEO_UPLOAD_FUNCTION_URL;
+
+    if (!projectId || !functionUrl) {
+      console.error('[createVideoUploadTask] Missing configuration: projectId or functionUrl');
+      return false;
+    }
+
+    const parent = client.queuePath(projectId, location, queue);
+
+    const task = {
+      httpRequest: {
+        httpMethod: 'POST' as const,
+        url: functionUrl,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: Buffer.from(JSON.stringify(payload)).toString('base64'),
+      },
+    };
+
+    console.log(`[createVideoUploadTask] Creating Cloud Task for user ${userId}, fileId: ${fileId}`);
+    const [response] = await client.createTask({ parent, task });
+    console.log(`[createVideoUploadTask] Task created: ${response.name}`);
+    
+    return true;
+  } catch (error) {
+    console.error('[createVideoUploadTask] Error creating task:', error);
+    return false;
+  }
+}
+
+/**
+ * Загружает медиа в GCS и возвращает объект с file_id и publicUrl
+ * Для видео загрузка происходит в фоне, для фото - синхронно
+ */
+async function uploadMediaToStorage(fileId: string, userId: number, fileType: 'photo' | 'video'): Promise<CoachMediaItem | null> {
+  try {
+    console.log(`[uploadMediaToStorage] Starting upload for fileId: ${fileId}, userId: ${userId}, fileType: ${fileType}`);
+    
+    if (!COACH_MEDIA_BUCKET) {
+      console.error('COACH_MEDIA_BUCKET environment variable not set');
+      return null;
+    }
+
+    // Получаем информацию о файле от Telegram
+    const fileInfo = await getBot().getFile(fileId);
+    const filePath = fileInfo.file_path;
+    
+    if (!filePath) {
+      console.error('File path not found');
+      return null;
+    }
+
+    console.log(`[uploadMediaToStorage] File path: ${filePath}, size: ${fileInfo.file_size} bytes`);
+
+    // Проверяем размер файла (макс 50 МБ)
+    const maxFileSize = 50 * 1024 * 1024; // 50 MB
+    if (fileInfo.file_size && fileInfo.file_size > maxFileSize) {
+      console.error(`[uploadMediaToStorage] File too large: ${fileInfo.file_size} bytes (max ${maxFileSize})`);
+      return null;
+    }
+
+    const uploadedAt = new Date().toISOString();
+
+    // Для видео сохраняем file_id и запускаем фоновую загрузку в GCS
+    if (fileType === 'video') {
+      console.log(`[uploadMediaToStorage] Video detected, saving file_id and starting background upload to GCS`);
+      
+      // Создаем задачу для фоновой загрузки в GCS (локально через HTTP или через Cloud Tasks)
+      const taskCreated = await createVideoUploadTask(fileId, userId);
+      
+      if (!taskCreated) {
+        console.error('[uploadMediaToStorage] Failed to create upload task');
+        return null;
+      }
+      
+      // Возвращаем объект с file_id, publicUrl будет добавлен позже функцией uploadCoachVideo
+      return {
+        type: 'video',
+        fileId,
+        uploadedAt
+      };
+    }
+
+    // Для фото загружаем в GCS синхронно
+    const BOT_TOKEN = isDev ? process.env.BOT_TOKEN_DEV : process.env.BOT_TOKEN;
+    if (!BOT_TOKEN) {
+      console.error('Bot token not found');
+      return null;
+    }
+    
+    const extension = filePath.split('.').pop()?.toLowerCase() || 'jpg';
+    const timestamp = Date.now();
+    const destinationPath = `coaches/${userId}/${timestamp}.${extension}`;
+    const contentType = extension === 'png' ? 'image/png' : 'image/jpeg';
+    
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+    console.log(`[uploadMediaToStorage] Downloading photo...`);
+    
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      console.error('Failed to download file from Telegram', response.status, response.statusText);
+      return null;
+    }
+    
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    console.log(`[uploadMediaToStorage] Photo downloaded, ${buffer.length} bytes`);
+    
+    // Загружаем в Cloud Storage
+    const bucket = storage.bucket(COACH_MEDIA_BUCKET);
+    const file = bucket.file(destinationPath);
+    
+    await file.save(buffer, {
+      metadata: {
+        contentType,
+        metadata: {
+          userId: userId.toString(),
+          uploadedAt,
+          fileType: 'photo',
+          telegramFileId: fileId
+        }
+      }
+    });
+    
+    const publicUrl = `https://storage.googleapis.com/${COACH_MEDIA_BUCKET}/${destinationPath}`;
+    console.log(`[uploadMediaToStorage] Photo upload complete! Public URL: ${publicUrl}`);
+    
+    // Возвращаем объект с file_id и publicUrl
+    return {
+      type: 'photo',
+      fileId,
+      publicUrl,
+      uploadedAt
+    };
+  } catch (error) {
+    console.error('[uploadMediaToStorage] Error uploading media to storage:', error);
+    return null;
+  }
+}
 
 // Ленивая инициализация бота (создаётся при первом вызове)
 let bot: TelegramBot | null = null;
@@ -172,11 +375,29 @@ setInterval(() => {
 }, 300000);
 
 // Интерфейс профиля пользователя
+interface CoachMediaItem {
+  type: 'photo' | 'video';
+  fileId: string;           // Telegram file_id для использования в боте
+  publicUrl?: string;        // URL в GCS для веб/мобильного приложения
+  uploadedAt: string;        // ISO дата загрузки
+}
+
 interface UserProfile {
   name?: string;
   level?: string;
   districts?: string[];
   favorites?: string[]; // Массив ID избранных кортов
+  isCoach?: boolean; // Флаг, что пользователь тренер
+  coachName?: string; // ФИО тренера при регистрации
+  coachDistricts?: string[]; // Районы, в которых тренер работает
+  coachPriceIndividual?: number; // Цена за индивидуальную тренировку
+  coachPriceSplit?: number; // Цена за сплит тренировку
+  coachPriceGroup?: number; // Цена за групповую тренировку
+  coachAvailableDays?: string[]; // Дни недели, когда тренер свободен
+  coachMedia?: CoachMediaItem[]; // Массив медиа-файлов (фото/видео)
+  coachAbout?: string; // Информация о тренере
+  coachContact?: string; // Контакт тренера (никнейм или телефон)
+  coachHidden?: boolean; // Флаг скрытого профиля (не показывать в каталоге)
   updatedAt?: Date;
 }
 
@@ -270,6 +491,34 @@ const timeOptions = [
   { id: 'any', label: 'Не важно' }
 ];
 
+// Дни недели для расписания тренера
+const CoachDayId = {
+  MON: 'mon',
+  TUE: 'tue',
+  WED: 'wed',
+  THU: 'thu',
+  FRI: 'fri',
+  SAT: 'sat',
+  SUN: 'sun',
+  WEEKDAYS: 'weekdays',
+  ANY: 'any'
+} as const;
+
+const coachDayLabels = new Map<string, string>([
+  [CoachDayId.MON, 'Пн'],
+  [CoachDayId.TUE, 'Вт'],
+  [CoachDayId.WED, 'Ср'],
+  [CoachDayId.THU, 'Чт'],
+  [CoachDayId.FRI, 'Пт'],
+  [CoachDayId.SAT, 'Сб'],
+  [CoachDayId.SUN, 'Вс'],
+  [CoachDayId.WEEKDAYS, 'Только будни'],
+  [CoachDayId.ANY, 'Любой день']
+]);
+
+const weekdayIds: string[] = [CoachDayId.MON, CoachDayId.TUE, CoachDayId.WED, CoachDayId.THU, CoachDayId.FRI];
+const allDayIds: string[] = [CoachDayId.MON, CoachDayId.TUE, CoachDayId.WED, CoachDayId.THU, CoachDayId.FRI, CoachDayId.SAT, CoachDayId.SUN];
+
 // Временное хранилище для состояния поиска (дата, спорт, выбранные локации, выбранное время)
 interface SearchState {
   date: string;
@@ -284,6 +533,38 @@ interface SearchState {
   totalPages?: number;
 }
 const searchStates = new Map<number, SearchState>();
+
+// Шаги регистрации тренера
+enum CoachRegistrationStep {
+  NONE = 'none',
+  NAME = 'name',
+  PRICE_INDIVIDUAL = 'price_individual',
+  PRICE_SPLIT = 'price_split',
+  PRICE_GROUP = 'price_group',
+  ABOUT = 'about',
+  MEDIA = 'media',
+  CONTACT = 'contact'
+}
+
+// Хранилище для отслеживания текущего шага регистрации тренера
+const coachRegistrationStates = new Map<number, CoachRegistrationStep>();
+
+// Enum для шагов редактирования профиля тренера
+enum CoachEditStep {
+  NONE = 'none',
+  NAME = 'edit_name',
+  DISTRICTS = 'edit_districts',
+  PRICE_INDIVIDUAL = 'edit_price_individual',
+  PRICE_SPLIT = 'edit_price_split',
+  PRICE_GROUP = 'edit_price_group',
+  DAYS = 'edit_days',
+  ABOUT = 'edit_about',
+  MEDIA = 'edit_media',
+  CONTACT = 'edit_contact'
+}
+
+// Хранилище для отслеживания текущего шага редактирования профиля
+const coachEditStates = new Map<number, CoachEditStep>();
 
 // === Функции для работы со слотами ===
 
@@ -303,7 +584,7 @@ async function loadSlots(sport: Sport, date: string): Promise<SlotsData | null> 
       }
       
       // Загружаем из Cloud Storage
-      const bucket = storage!.bucket(BUCKET_NAME);
+      const bucket = storage.bucket(BUCKET_NAME);
       const file = bucket.file(fileName);
       
       const [exists] = await file.exists();
@@ -1164,6 +1445,100 @@ function getDistrictKeyboard(selectedDistricts: string[]): TelegramBot.InlineKey
   ];
 }
 
+// Генерация клавиатуры для выбора районов тренера (географическое расположение)
+function getCoachDistrictKeyboard(selectedDistricts: string[]): TelegramBot.InlineKeyboardButton[][] {
+  const getButtonText = (id: string) => {
+    const label = locationLabels.get(id) || id;
+    return selectedDistricts.includes(id) ? `✅ ${label}` : label;
+  };
+
+  return [
+    // Север - отдельная строка
+    [{
+      text: getButtonText(LocationId.NORTH),
+      callback_data: `coach_district_${LocationId.NORTH}`
+    }],
+    // Запад, Центр, Восток - в одной строке
+    [
+      {
+        text: getButtonText(LocationId.WEST),
+        callback_data: `coach_district_${LocationId.WEST}`
+      },
+      {
+        text: getButtonText(LocationId.CENTER),
+        callback_data: `coach_district_${LocationId.CENTER}`
+      },
+      {
+        text: getButtonText(LocationId.EAST),
+        callback_data: `coach_district_${LocationId.EAST}`
+      }
+    ],
+    // Юг - отдельная строка
+    [{
+      text: getButtonText(LocationId.SOUTH),
+      callback_data: `coach_district_${LocationId.SOUTH}`
+    }],
+    // Подмосковье - отдельная строка
+    [{
+      text: getButtonText(LocationId.MOSCOW_REGION),
+      callback_data: `coach_district_${LocationId.MOSCOW_REGION}`
+    }],
+    // Не важно - отдельная строка
+    [{
+      text: getButtonText(LocationId.ANY),
+      callback_data: `coach_district_${LocationId.ANY}`
+    }],
+    // Готово - отдельная строка
+    [{ text: '✔️ Готово', callback_data: 'coach_district_done' }]
+  ];
+}
+
+// Генерация клавиатуры для выбора дней недели тренера
+function getCoachDaysKeyboard(selectedDays: string[]): TelegramBot.InlineKeyboardButton[][] {
+  const getButtonText = (id: string) => {
+    const label = coachDayLabels.get(id) || id;
+    return selectedDays.includes(id) ? `✅ ${label}` : label;
+  };
+  
+  // Проверяем, выбраны ли все будни или все дни
+  const hasAllWeekdays = weekdayIds.every(d => selectedDays.includes(d));
+  const hasAllDays = allDayIds.every(d => selectedDays.includes(d));
+  
+  const getSpecialButtonText = (id: string, isActive: boolean) => {
+    const label = coachDayLabels.get(id) || id;
+    return isActive ? `✅ ${label}` : label;
+  };
+
+  return [
+    // Пн-Чт
+    [
+      { text: getButtonText(CoachDayId.MON), callback_data: `coach_day_${CoachDayId.MON}` },
+      { text: getButtonText(CoachDayId.TUE), callback_data: `coach_day_${CoachDayId.TUE}` },
+      { text: getButtonText(CoachDayId.WED), callback_data: `coach_day_${CoachDayId.WED}` },
+      { text: getButtonText(CoachDayId.THU), callback_data: `coach_day_${CoachDayId.THU}` }
+    ],
+    // Пт-Вс
+    [
+      { text: getButtonText(CoachDayId.FRI), callback_data: `coach_day_${CoachDayId.FRI}` },
+      { text: getButtonText(CoachDayId.SAT), callback_data: `coach_day_${CoachDayId.SAT}` },
+      { text: getButtonText(CoachDayId.SUN), callback_data: `coach_day_${CoachDayId.SUN}` }
+    ],
+    // Только будни и Любой день
+    [
+      {
+        text: coachDayLabels.get(CoachDayId.WEEKDAYS) || 'Только будни',
+        callback_data: `coach_day_${CoachDayId.WEEKDAYS}`
+      },
+      {
+        text: coachDayLabels.get(CoachDayId.ANY) || 'Любой день',
+        callback_data: `coach_day_${CoachDayId.ANY}`
+      }
+    ],
+    // Готово
+    [{ text: '✔️ Готово', callback_data: 'coach_day_done' }]
+  ];
+}
+
 /**
  * Подсчитывает количество доступных кортов по локациям на основе слотов
  */
@@ -1486,6 +1861,9 @@ function getPaginationKeyboard(
     buttons.push(paginationRow);
   }
   
+  // Кнопка "Подобрать тренера"
+  buttons.push([{ text: '👤 Подобрать тренера', callback_data: 'find_coach_start' }]);
+  
   // Кнопка "Выбрать другую дату"
   buttons.push([{ text: '📅 Выбрать другую дату', callback_data: `select_another_date_${sport}` }]);
   
@@ -1512,7 +1890,8 @@ async function handleStart(msg: TelegramBot.Message) {
     reply_markup: {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }],
-        [{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }],
+        [{ text: '🏓 Найти корт (падел)' }],
+        [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
       ],
       resize_keyboard: true
     }
@@ -1600,6 +1979,436 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
     });
     return;
+  }
+
+  // Проверяем, это ответ на вопрос "Как вас зовут?" при регистрации тренера
+  if (userId && text) {
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const currentStep = coachRegistrationStates.get(userId);
+    
+    if (isNotCommand && currentStep === CoachRegistrationStep.NAME) {
+      // Сохраняем имя тренера
+      const profile = await getUserProfile(userId) || {};
+      profile.coachName = text;
+      profile.coachDistricts = []; // Инициализируем пустой выбор районов
+      await saveUserProfile(userId, profile);
+
+      // Шаг 2: Спрашиваем районы (это callback, не текстовый ответ)
+      await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_DISTRICTS, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: getCoachDistrictKeyboard([])
+        }
+      });
+      return;
+    }
+  }
+
+  // Проверяем, это ответ на вопрос о цене индивидуальной тренировки
+  if (userId && text) {
+    const currentStep = coachRegistrationStates.get(userId);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    
+    if (isNotCommand && currentStep === CoachRegistrationStep.PRICE_INDIVIDUAL) {
+      // Проверяем, что введено только целое число
+      const cleanText = text.trim();
+      if (!/^\d+$/.test(cleanText)) {
+        await getBot().sendMessage(chatId, 'Пожалуйста, введите только целое число (без пробелов, букв и дробных частей)');
+        return;
+      }
+      
+      const price = parseInt(cleanText, 10);
+      if (isNaN(price) || price < 0) {
+        await getBot().sendMessage(chatId, 'Пожалуйста, введите корректную цену (число в рублях или 0, если не ведёте такую тренировку)');
+        return;
+      }
+      if (price > 50000) {
+        await getBot().sendMessage(chatId, 'Цена не может превышать 50 000 рублей. Пожалуйста, введите корректную цену.');
+        return;
+      }
+      
+      const profile = await getUserProfile(userId) || {};
+      profile.coachPriceIndividual = price;
+      await saveUserProfile(userId, profile);
+
+      // Шаг 4: Спрашиваем цену сплит тренировки
+      await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_PRICE_SPLIT, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          keyboard: [
+            [{ text: '🎾 Найти корт (теннис)' }],
+            [{ text: '🏓 Найти корт (падел)' }],
+            [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
+          ],
+          resize_keyboard: true
+        }
+      });
+      // Устанавливаем следующий шаг
+      coachRegistrationStates.set(userId, CoachRegistrationStep.PRICE_SPLIT);
+      return;
+    }
+  }
+
+  // Проверяем, это ответ на вопрос о цене сплит тренировки
+  if (userId && text) {
+    const currentStep = coachRegistrationStates.get(userId);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    
+    if (isNotCommand && currentStep === CoachRegistrationStep.PRICE_SPLIT) {
+      // Проверяем, что введено только целое число
+      const cleanText = text.trim();
+      if (!/^\d+$/.test(cleanText)) {
+        await getBot().sendMessage(chatId, 'Пожалуйста, введите только целое число (без пробелов, букв и дробных частей)');
+        return;
+      }
+      
+      const price = parseInt(cleanText, 10);
+      if (isNaN(price) || price < 0) {
+        await getBot().sendMessage(chatId, 'Пожалуйста, введите корректную цену (число в рублях или 0, если не ведёте такую тренировку)');
+        return;
+      }
+      if (price > 50000) {
+        await getBot().sendMessage(chatId, 'Цена не может превышать 50 000 рублей. Пожалуйста, введите корректную цену.');
+        return;
+      }
+      
+      const profile = await getUserProfile(userId) || {};
+      profile.coachPriceSplit = price;
+      await saveUserProfile(userId, profile);
+
+      // Шаг 5: Спрашиваем цену групповой тренировки
+      await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_PRICE_GROUP, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          keyboard: [
+            [{ text: '🎾 Найти корт (теннис)' }],
+            [{ text: '🏓 Найти корт (падел)' }],
+            [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
+          ],
+          resize_keyboard: true
+        }
+      });
+      // Устанавливаем следующий шаг
+      coachRegistrationStates.set(userId, CoachRegistrationStep.PRICE_GROUP);
+      return;
+    }
+  }
+
+  // Проверяем, это ответ на вопрос о цене групповой тренировки
+  if (userId && text) {
+    const currentStep = coachRegistrationStates.get(userId);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    
+    if (isNotCommand && currentStep === CoachRegistrationStep.PRICE_GROUP) {
+      // Проверяем, что введено только целое число
+      const cleanText = text.trim();
+      if (!/^\d+$/.test(cleanText)) {
+        await getBot().sendMessage(chatId, 'Пожалуйста, введите только целое число (без пробелов, букв и дробных частей)');
+        return;
+      }
+      
+      const price = parseInt(cleanText, 10);
+      if (isNaN(price) || price < 0) {
+        await getBot().sendMessage(chatId, 'Пожалуйста, введите корректную цену (число в рублях или 0, если не ведёте такую тренировку)');
+        return;
+      }
+      if (price > 50000) {
+        await getBot().sendMessage(chatId, 'Цена не может превышать 50 000 рублей. Пожалуйста, введите корректную цену.');
+        return;
+      }
+      
+      const profile = await getUserProfile(userId) || {};
+      profile.coachPriceGroup = price;
+      profile.coachAvailableDays = []; // Инициализируем пустой выбор дней
+      await saveUserProfile(userId, profile);
+
+      // Шаг 6: Спрашиваем дни недели (это callback, не текстовый ответ, поэтому не меняем шаг)
+      await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_DAYS, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: getCoachDaysKeyboard([])
+        }
+      });
+      return;
+    }
+  }
+
+  // Проверяем, это ответ на вопрос о тренере
+  if (userId && text) {
+    const currentStep = coachRegistrationStates.get(userId);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    
+    if (isNotCommand && currentStep === CoachRegistrationStep.ABOUT) {
+      // Проверяем длину текста
+      if (text.length > 1000) {
+        await getBot().sendMessage(chatId, USER_TEXTS.COACH_ABOUT_TOO_LONG(text.length), {
+          parse_mode: 'HTML'
+        });
+        return;
+      }
+
+      const profile = await getUserProfile(userId) || {};
+      profile.coachAbout = text;
+      await saveUserProfile(userId, profile);
+
+      // Шаг 8: Загрузка медиа
+      await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_MEDIA, {
+        parse_mode: 'HTML'
+      });
+      // Устанавливаем шаг - ждем медиа
+      coachRegistrationStates.set(userId, CoachRegistrationStep.MEDIA);
+      // Инициализируем массив медиа
+      profile.coachMedia = [];
+      await saveUserProfile(userId, profile);
+      return;
+    }
+
+    // Обработка ввода контакта (шаг 9)
+    if (isNotCommand && currentStep === CoachRegistrationStep.CONTACT) {
+      const profile = await getUserProfile(userId) || {};
+      profile.coachContact = text;
+      profile.isCoach = true; // Помечаем пользователя как тренера
+      await saveUserProfile(userId, profile);
+      
+      // Удаляем из хранилища регистрации - регистрация завершена
+      coachRegistrationStates.delete(userId);
+
+      // Регистрация завершена
+      await getBot().sendMessage(chatId, USER_TEXTS.COACH_REGISTRATION_COMPLETE, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '👀 Посмотреть профиль', callback_data: 'coach_view_profile' }],
+            [{ text: '✏️ Редактировать профиль', callback_data: 'coach_edit_profile' }],
+            [{ text: '⏸ Не показывать временно', callback_data: 'coach_hide_profile' }]
+          ]
+        }
+      });
+      return;
+    }
+  }
+
+  // Обработка редактирования профиля тренера
+  if (userId && text) {
+    const editStep = coachEditStates.get(userId);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    
+    // Редактирование имени
+    if (isNotCommand && editStep === CoachEditStep.NAME) {
+      const profile = await getUserProfile(userId) || {};
+      profile.coachName = text;
+      await saveUserProfile(userId, profile);
+      
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, `✅ Имя обновлено: <b>${text}</b>`, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+      return;
+    }
+    
+    // Редактирование цен
+    if (isNotCommand && (
+      editStep === CoachEditStep.PRICE_INDIVIDUAL ||
+      editStep === CoachEditStep.PRICE_SPLIT ||
+      editStep === CoachEditStep.PRICE_GROUP
+    )) {
+      const cleanText = text.trim();
+      
+      // Валидация
+      if (!/^\d+$/.test(cleanText)) {
+        await getBot().sendMessage(chatId, USER_TEXTS.COACH_PRICE_INVALID_FORMAT);
+        return;
+      }
+      
+      const price = parseInt(cleanText);
+      if (price < 0 || price > 50000) {
+        await getBot().sendMessage(chatId, USER_TEXTS.COACH_PRICE_INVALID_RANGE);
+        return;
+      }
+      
+      const profile = await getUserProfile(userId) || {};
+      
+      if (editStep === CoachEditStep.PRICE_INDIVIDUAL) {
+        profile.coachPriceIndividual = price;
+      } else if (editStep === CoachEditStep.PRICE_SPLIT) {
+        profile.coachPriceSplit = price;
+      } else if (editStep === CoachEditStep.PRICE_GROUP) {
+        profile.coachPriceGroup = price;
+      }
+      
+      await saveUserProfile(userId, profile);
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, `✅ Цена обновлена: <b>${price} ₽</b>`, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+      return;
+    }
+    
+    // Редактирование описания
+    if (isNotCommand && editStep === CoachEditStep.ABOUT) {
+      if (text.length > 1000) {
+        await getBot().sendMessage(chatId, USER_TEXTS.COACH_ABOUT_TOO_LONG(text.length), {
+          parse_mode: 'HTML'
+        });
+        return;
+      }
+      
+      const profile = await getUserProfile(userId) || {};
+      profile.coachAbout = text;
+      await saveUserProfile(userId, profile);
+      
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, '✅ Информация о себе обновлена', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+      return;
+    }
+    
+    // Редактирование контакта
+    if (isNotCommand && editStep === CoachEditStep.CONTACT) {
+      const profile = await getUserProfile(userId) || {};
+      profile.coachContact = text;
+      await saveUserProfile(userId, profile);
+      
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, `✅ Контакт обновлен: <b>${text}</b>`, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+      return;
+    }
+  }
+  
+  // Обработка медиа при редактировании
+  if (userId) {
+    const editStep = coachEditStates.get(userId);
+    
+    if (editStep === CoachEditStep.MEDIA && (msg.photo || msg.video)) {
+      const profile = await getUserProfile(userId) || {};
+      const mediaArray = profile.coachMedia || [];
+      
+      let fileId: string | undefined;
+      let fileType: 'photo' | 'video' | undefined;
+      
+      if (msg.photo && msg.photo.length > 0) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        fileType = 'photo';
+      } else if (msg.video) {
+        fileId = msg.video.file_id;
+        fileType = 'video';
+      }
+      
+      if (fileId && fileType) {
+        const processingMsg = await getBot().sendMessage(chatId, '⏳ Обрабатываю файл...');
+        
+        const mediaItem = await uploadMediaToStorage(fileId, userId, fileType);
+        
+        try {
+          await getBot().deleteMessage(chatId, processingMsg.message_id);
+        } catch (e) {
+          console.log('Could not delete processing message');
+        }
+        
+        if (mediaItem) {
+          mediaArray.push(mediaItem);
+          profile.coachMedia = mediaArray;
+          await saveUserProfile(userId, profile);
+          
+          await getBot().sendMessage(chatId, '✅ Медиа добавлено!', {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '✔️ Готово', callback_data: 'coach_edit_done' }],
+                [{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]
+              ]
+            }
+          });
+        }
+      }
+      return;
+    }
+  }
+
+  // Проверяем, это загрузка фото/видео при регистрации тренера
+  if (userId) {
+    const currentStep = coachRegistrationStates.get(userId);
+    
+    if (currentStep === CoachRegistrationStep.MEDIA && (msg.photo || msg.video)) {
+      const profile = await getUserProfile(userId) || {};
+      const mediaArray = profile.coachMedia || [];
+      
+      // Получаем file_id и тип файла
+      let fileId: string | undefined;
+      let fileType: 'photo' | 'video' | undefined;
+      
+      if (msg.photo && msg.photo.length > 0) {
+        // Берем фото наибольшего размера
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        fileType = 'photo';
+      } else if (msg.video) {
+        fileId = msg.video.file_id;
+        fileType = 'video';
+      }
+      
+      if (fileId && fileType) {
+        console.log(`[handleMessage] Processing ${fileType} with fileId: ${fileId}`);
+        
+        // Отправляем сообщение о процессе
+        const processingMsg = await getBot().sendMessage(chatId, '⏳ Обрабатываю файл...');
+        
+        // Загружаем файл (для фото - синхронно в GCS, для видео - сохраняем file_id и запускаем фоновую загрузку)
+        const mediaItem = await uploadMediaToStorage(fileId, userId, fileType);
+        
+        // Удаляем сообщение о процессе
+        try {
+          await getBot().deleteMessage(chatId, processingMsg.message_id);
+        } catch (e) {
+          console.log('Could not delete processing message');
+        }
+        
+        if (mediaItem) {
+          console.log(`[handleMessage] Successfully processed media: fileId=${mediaItem.fileId}, type=${mediaItem.type}, hasPublicUrl=${!!mediaItem.publicUrl}`);
+          
+          // Добавляем медиа-объект в профиль
+          mediaArray.push(mediaItem);
+          profile.coachMedia = mediaArray;
+          await saveUserProfile(userId, profile);
+          
+          // Отправляем подтверждение с кнопками
+          const message = fileType === 'video' ? USER_TEXTS.COACH_VIDEO_PROCESSING : USER_TEXTS.COACH_MEDIA_UPLOADED;
+          await getBot().sendMessage(chatId, message, {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '📤 Загрузить еще', callback_data: 'coach_media_upload_more' }],
+                [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
+              ]
+            }
+          });
+        } else {
+          console.error(`[handleMessage] Failed to process media`);
+          await getBot().sendMessage(chatId, '❌ Ошибка при обработке файла. Попробуйте другой файл или нажмите "Готово"', {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
+              ]
+            }
+          });
+        }
+      }
+      return;
+    }
   }
 
   switch (text) {
@@ -1894,13 +2703,54 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
       break;
-    // case '👤 Профиль':
-    //   await getBot().sendMessage(chatId, '👤 Как к тебе обращаться?', {
-    //     reply_markup: {
-    //       force_reply: true
-    //     }
-    //   });
-    //   break;
+    case '👤 Профиль':
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'profile',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      // Получаем профиль пользователя
+      const profileData = userId ? await getUserProfile(userId) : null;
+      const profileName = profileData?.name || msg.from?.first_name || 'друг';
+      const favoriteCourtsCount = profileData?.favorites?.length || 0;
+      const isCoach = profileData?.isCoach || false;
+      
+      // Формируем сообщение профиля
+      let profileMessage = `👤 *Профиль*\n\n`;
+      profileMessage += `Имя: ${profileName}\n`;
+      profileMessage += `Избранных кортов: ${favoriteCourtsCount}\n`;
+      profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
+      profileMessage += `Что хочешь сделать?`;
+      
+      const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
+      const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
+      
+      await getBot().sendMessage(chatId, profileMessage, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
+            [{ text: coachButtonText, callback_data: coachButtonData }],
+            [{ text: '◀️ Назад', callback_data: 'action_home' }]
+          ]
+        }
+      });
+      break;
   }
 }
 
@@ -3092,6 +3942,1008 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Обработка кнопки "Избранные корты" из профиля
+  if (data === 'profile_favorites') {
+    // Проверяем, есть ли у пользователя избранные корты
+    const userProfile = await getUserProfile(userId) || {};
+    const favoriteCourts = userProfile.favorites || [];
+    
+    if (favoriteCourts.length === 0) {
+      // Нет избранных кортов - показываем предложение добавить
+      await safeEditMessageText(
+        'Избранные корты — твой быстрый доступ к любимым площадкам.\n\n' +
+        '• в 1 клик будешь видеть ближайшие слоты только по ним\n' +
+        '• в общем поиске они будут вверху списка\n\n' +
+        'Добавим?',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '➕ Выбрать избранные', callback_data: 'favorites_select' }],
+              [{ text: '◀️ Назад', callback_data: 'action_home' }]
+            ]
+          }
+        }
+      );
+    } else {
+      // Есть избранные корты - сразу показываем ближайшие слоты
+      await safeEditMessageText(
+        '🔍 Ищу ближайшие свободные слоты по твоим избранным кортам...',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id
+        }
+      );
+      
+      // Получаем даты на 3 дня вперед
+      const moscowToday = getMoscowTime();
+      moscowToday.setHours(0, 0, 0, 0);
+      const dates: string[] = [];
+      const dateStrs: string[] = [];
+      
+      for (let i = 0; i < 3; i++) {
+        const date = new Date(moscowToday);
+        date.setDate(date.getDate() + i);
+        const dateKey = formatMoscowDateToYYYYMMDD(date);
+        const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+        dates.push(dateKey);
+        dateStrs.push(dateStr);
+      }
+      
+      // Собираем слоты по кортам (группировка по кортам, а не по датам)
+      const courtsData: Map<string, Array<{ date: string; dateKey: string; slots: Slot[] }>> = new Map();
+      let lastUpdatedTime: string | undefined = undefined;
+      
+      for (let i = 0; i < dates.length; i++) {
+        const dateKey = dates[i];
+        const dateStr = dateStrs[i];
+        
+        const slotsData = await loadSlots(SportType.TENNIS, dateKey);
+        if (slotsData) {
+          // Сохраняем время обновления (берем самое свежее)
+          if (slotsData.lastUpdated && (!lastUpdatedTime || slotsData.lastUpdated > lastUpdatedTime)) {
+            lastUpdatedTime = slotsData.lastUpdated;
+          }
+          
+          // Получаем слоты на дату
+          let siteSlots = getSlotsByDate(slotsData, dateKey);
+          
+          // Фильтруем только по избранным кортам
+          siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
+          
+          // Добавляем слоты в структуру по кортам
+          for (const { siteName, slots } of siteSlots) {
+            if (!courtsData.has(siteName)) {
+              courtsData.set(siteName, []);
+            }
+            courtsData.get(siteName)!.push({
+              date: dateStr,
+              dateKey: dateKey,
+              slots: slots
+            });
+          }
+        }
+      }
+      
+      if (courtsData.size === 0) {
+        await safeEditMessageText(
+          '⭐ На ближайшие 3 дня по твоим избранным кортам свободных слотов не найдено.',
+          {
+            chat_id: chatId,
+            message_id: query.message?.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+                [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+                [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
+              ]
+            }
+          }
+        );
+      } else {
+        // Сортируем корты по приоритету
+        const sortedCourts = Array.from(courtsData.entries()).sort(([siteNameA], [siteNameB]) => {
+          const aHasMetro = !!TENNIS_COURT_METRO[siteNameA];
+          const bHasMetro = !!TENNIS_COURT_METRO[siteNameB];
+          const aIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameA] || []).includes('moscow-region');
+          const bIsMoscowRegion = (TENNIS_COURT_LOCATIONS[siteNameB] || []).includes('moscow-region');
+          
+          if (aHasMetro && !bHasMetro) return -1;
+          if (!aHasMetro && bHasMetro) return 1;
+          if (aIsMoscowRegion && !bIsMoscowRegion) return 1;
+          if (!aIsMoscowRegion && bIsMoscowRegion) return -1;
+          return 0;
+        });
+        
+        const sortedCourtsData = new Map(sortedCourts);
+        // Передаем явный диапазон дат для корректного отображения "ближайшие 3 дня"
+        const message = formatFavoriteCourtsSlots(
+          sortedCourtsData, 
+          lastUpdatedTime,
+          undefined, // singleDateStr
+          dates[0], // dateRangeStart - первая дата диапазона (сегодня)
+          dates[dates.length - 1] // dateRangeEnd - последняя дата диапазона (через 2 дня от сегодня)
+        );
+        
+        await safeEditMessageText(
+          message,
+          {
+            chat_id: chatId,
+            message_id: query.message?.message_id,
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '✏️ Изменить список избранных', callback_data: 'favorites_edit' }],
+                [{ text: '🎾 Искать по всем кортам', callback_data: 'favorites_main_search' }],
+                [{ text: '📅 Выбрать другую дату', callback_data: `favorites_date_custom` }]
+              ]
+            }
+          }
+        );
+      }
+    }
+    return;
+  }
+
+  // Обработка кнопки "Я тренер"
+  if (data === 'profile_toggle_coach') {
+    const coachMessage = `🎾 *Для тренеров*\n\n` +
+      `Зарегистрируйтесь в Play Today — сейчас это бесплатно.\n\n` +
+      `Мы будем показывать ваш профиль пользователям, которые ищут тренера в подходящих вам районах.\n\n` +
+      `Вы сможете принимать заявки на тренировки: индивидуальные / сплит / групповые.\n\n` +
+      `Чтобы начать, нам нужна базовая информация — займёт примерно 2 минуты.`;
+    
+    await safeEditMessageText(
+      coachMessage,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ Зарегистрироваться', callback_data: 'coach_register' }],
+            [{ text: '⬅️ Назад', callback_data: 'profile_back' }]
+          ]
+        }
+      }
+    );
+    return;
+  }
+
+  // Обработка кнопки "Назад" из профиля тренера
+  if (data === 'profile_back') {
+    const userProfile = await getUserProfile(userId) || {};
+    const profileName = userProfile.name || query.from.first_name || 'друг';
+    const favoriteCourtsCount = userProfile.favorites?.length || 0;
+    const isCoach = userProfile.isCoach || false;
+    
+    let profileMessage = `👤 *Профиль*\n\n`;
+    profileMessage += `Имя: ${profileName}\n`;
+    profileMessage += `Избранных кортов: ${favoriteCourtsCount}\n`;
+    profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
+    profileMessage += `Что хочешь сделать?`;
+    
+    const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
+    const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
+    
+    await safeEditMessageText(
+      profileMessage,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
+            [{ text: coachButtonText, callback_data: coachButtonData }],
+            [{ text: '◀️ Назад', callback_data: 'action_home' }]
+          ]
+        }
+      }
+    );
+    return;
+  }
+
+  // Обработка регистрации тренера
+  if (data === 'coach_register') {
+    // Спрашиваем имя тренера
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_NAME, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        keyboard: [
+          [{ text: '🎾 Найти корт (теннис)' }],
+          [{ text: '🏓 Найти корт (падел)' }],
+          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
+        ],
+        resize_keyboard: true
+      }
+    });
+    // Устанавливаем шаг регистрации - ждем имя
+    coachRegistrationStates.set(userId, CoachRegistrationStep.NAME);
+    return;
+  }
+
+  // Обработка выбора района тренера
+  if (data?.startsWith('coach_district_') && !data.includes('done')) {
+    const districtId = data.replace('coach_district_', '');
+    const profile = await getUserProfile(userId) || {};
+    const selectedDistricts = profile.coachDistricts || [];
+    
+    let newDistricts: string[];
+    
+    if (districtId === LocationId.ANY) {
+      // Если выбирается "Не важно" — сбрасываем остальные районы
+      if (selectedDistricts.includes(LocationId.ANY)) {
+        newDistricts = [];
+      } else {
+        newDistricts = [LocationId.ANY];
+      }
+    } else {
+      // Если выбирается конкретный район — убираем "Не важно"
+      const withoutAny = selectedDistricts.filter(d => d !== LocationId.ANY);
+      if (withoutAny.includes(districtId)) {
+        newDistricts = withoutAny.filter(d => d !== districtId);
+      } else {
+        newDistricts = [...withoutAny, districtId];
+      }
+    }
+    
+    profile.coachDistricts = newDistricts;
+    await saveUserProfile(userId, profile);
+    
+    // Обновляем клавиатуру
+    await safeEditMessageReplyMarkup(
+      { inline_keyboard: getCoachDistrictKeyboard(newDistricts) },
+      { chat_id: chatId, message_id: query.message?.message_id }
+    );
+    return;
+  }
+
+  // Обработка завершения выбора районов тренера
+  if (data === 'coach_district_done') {
+    const profile = await getUserProfile(userId) || {};
+    const selectedDistricts = profile.coachDistricts || [];
+    
+    if (selectedDistricts.length === 0) {
+    await safeAnswerCallbackQuery(query.id, { 
+        text: 'Выберите хотя бы один район!',
+        show_alert: true
+      });
+      return;
+    }
+    
+    // Шаг 3: Спрашиваем цену индивидуальной тренировки
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_PRICE_INDIVIDUAL, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        keyboard: [
+          [{ text: '🎾 Найти корт (теннис)' }],
+          [{ text: '🏓 Найти корт (падел)' }],
+          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
+        ],
+        resize_keyboard: true
+      }
+    });
+    // Устанавливаем шаг - ждем цену индивидуальной тренировки
+    coachRegistrationStates.set(userId, CoachRegistrationStep.PRICE_INDIVIDUAL);
+    return;
+  }
+
+  // Обработка выбора дня недели тренера
+  if (data?.startsWith('coach_day_') && !data.includes('done')) {
+    const dayId = data.replace('coach_day_', '');
+    const profile = await getUserProfile(userId) || {};
+    const selectedDays = profile.coachAvailableDays || [];
+    
+    let newDays: string[];
+    
+    if (dayId === CoachDayId.ANY) {
+      // Если выбирается "Любой день" — выбираем все дни
+      const hasAllDays = allDayIds.every(d => selectedDays.includes(d));
+      if (hasAllDays) {
+        newDays = [];
+      } else {
+        newDays = [...allDayIds];
+      }
+    } else if (dayId === CoachDayId.WEEKDAYS) {
+      // Если выбирается "Только будни" — устанавливаем ТОЛЬКО Пн-Пт
+      const hasAllWeekdays = weekdayIds.every(d => selectedDays.includes(d)) && 
+                             !selectedDays.includes(CoachDayId.SAT) && 
+                             !selectedDays.includes(CoachDayId.SUN);
+      if (hasAllWeekdays) {
+        // Если уже выбраны только будни - сбрасываем
+        newDays = [];
+      } else {
+        // Устанавливаем только будни (Пн-Пт), убирая все остальное
+        newDays = [...weekdayIds];
+      }
+    } else {
+      // Если выбирается конкретный день — убираем "Любой день"
+      const withoutSpecial = selectedDays.filter(d => d !== CoachDayId.ANY && d !== CoachDayId.WEEKDAYS);
+      if (withoutSpecial.includes(dayId)) {
+        newDays = withoutSpecial.filter(d => d !== dayId);
+      } else {
+        newDays = [...withoutSpecial, dayId];
+      }
+    }
+    
+    profile.coachAvailableDays = newDays;
+    await saveUserProfile(userId, profile);
+    
+    // Обновляем клавиатуру
+    await safeEditMessageReplyMarkup(
+      { inline_keyboard: getCoachDaysKeyboard(newDays) },
+      { chat_id: chatId, message_id: query.message?.message_id }
+    );
+    return;
+  }
+
+  // Обработка завершения выбора дней тренера
+  if (data === 'coach_day_done') {
+    console.log('coach_day_done handler triggered');
+    const profile = await getUserProfile(userId) || {};
+    const selectedDays = profile.coachAvailableDays || [];
+    console.log('Selected days:', selectedDays);
+    
+    if (selectedDays.length === 0) {
+      console.log('No days selected, showing error');
+      await safeAnswerCallbackQuery(query.id, {
+        text: 'Выберите хотя бы один день!',
+        show_alert: true
+      });
+      return;
+    }
+    
+    console.log('Proceeding to about step');
+    
+    // Шаг 7: Спрашиваем информацию о тренере
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_ABOUT, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        keyboard: [
+          [{ text: '🎾 Найти корт (теннис)' }],
+          [{ text: '🏓 Найти корт (падел)' }],
+          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
+        ],
+        resize_keyboard: true
+      }
+    });
+    // Устанавливаем шаг - ждем информацию о тренере
+    coachRegistrationStates.set(userId, CoachRegistrationStep.ABOUT);
+    return;
+  }
+
+  // Обработка кнопки "Загрузить еще"
+  if (data === 'coach_media_upload_more') {
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_UPLOAD_MORE_PROMPT, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
+        ]
+      }
+    });
+    return;
+  }
+
+  // Обработка завершения загрузки медиа - переход к шагу контакта
+  if (data === 'coach_media_done') {
+    const username = query.from?.username || 'unknown';
+    
+    // Переходим к шагу контакта
+    coachRegistrationStates.set(userId, CoachRegistrationStep.CONTACT);
+    
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_CONTACT(username), {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `✅ Да, использовать @${username}`, callback_data: 'coach_contact_skip' }]
+        ]
+      }
+    });
+    return;
+  }
+
+  // Обработка пропуска контакта (использование текущего никнейма)
+  if (data === 'coach_contact_skip') {
+    const profile = await getUserProfile(userId) || {};
+    const username = query.from?.username || 'unknown';
+    profile.coachContact = `@${username}`;
+    profile.isCoach = true; // Помечаем пользователя как тренера
+    await saveUserProfile(userId, profile);
+    
+    // Удаляем из хранилища регистрации - регистрация завершена
+    coachRegistrationStates.delete(userId);
+
+    // Регистрация завершена
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_REGISTRATION_COMPLETE, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '👀 Посмотреть профиль', callback_data: 'coach_view_profile' }],
+          [{ text: '✏️ Редактировать профиль', callback_data: 'coach_edit_profile' }],
+          [{ text: '💤 Поставить на паузу', callback_data: 'coach_hide_profile' }]
+        ]
+      }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Просмотр профиля тренера
+  if (data === 'coach_view_profile') {
+    const profile = await getUserProfile(userId);
+    
+    if (!profile || !profile.isCoach) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Профиль не найден' });
+      return;
+    }
+    
+    // Формируем текст профиля
+    let profileText = `👤 <b>${profile.coachName || 'Имя не указано'}</b>\n\n`;
+    
+    if (profile.coachAbout) {
+      profileText += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+    }
+    
+    if (profile.coachDistricts && profile.coachDistricts.length > 0) {
+      const locationLabels: Record<string, string> = {
+        north: 'Север',
+        west: 'Запад',
+        center: 'Центр',
+        east: 'Восток',
+        south: 'Юг',
+        suburbs: 'Подмосковье'
+      };
+      const districts = profile.coachDistricts.map(d => locationLabels[d] || d).join(', ');
+      profileText += `📍 <b>Районы:</b> ${districts}\n\n`;
+    }
+    
+    if (profile.coachAvailableDays && profile.coachAvailableDays.length > 0) {
+      const dayLabels: Record<string, string> = {
+        mon: 'Пн',
+        tue: 'Вт',
+        wed: 'Ср',
+        thu: 'Чт',
+        fri: 'Пт',
+        sat: 'Сб',
+        sun: 'Вс'
+      };
+      const days = profile.coachAvailableDays.map(d => dayLabels[d] || d).join(', ');
+      profileText += `📅 <b>Свободен:</b> ${days}\n\n`;
+    }
+    
+    profileText += `💰 <b>Цены:</b>\n`;
+    if (profile.coachPriceIndividual && profile.coachPriceIndividual > 0) {
+      profileText += `   • Индивидуальная: ${profile.coachPriceIndividual} ₽/час\n`;
+    }
+    if (profile.coachPriceSplit && profile.coachPriceSplit > 0) {
+      profileText += `   • Сплит: ${profile.coachPriceSplit} ₽/час с человека\n`;
+    }
+    if (profile.coachPriceGroup && profile.coachPriceGroup > 0) {
+      profileText += `   • Групповая: ${profile.coachPriceGroup} ₽/час с человека\n`;
+    }
+    profileText += `\n`;
+    
+    if (profile.coachContact) {
+      profileText += `📱 <b>Контакт:</b> ${profile.coachContact}\n\n`;
+    }
+    
+    // Определяем текст кнопки видимости в зависимости от статуса профиля
+    const isHidden = profile.coachHidden || false;
+    const visibilityButtonText = isHidden ? '✅ Включить показы' : '💤 Поставить на паузу';
+    const visibilityStatus = isHidden ? '🔴 <b>Профиль на паузе</b>' : '🟢 <b>Профиль активен</b>';
+    
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '✏️ Редактировать', callback_data: 'coach_edit_profile' }],
+        [{ text: visibilityButtonText, callback_data: 'coach_hide_profile' }],
+        [{ text: '« Назад', callback_data: 'action_home' }]
+      ]
+    };
+    
+    // Если есть медиа-файлы, отправляем их с caption (текстом профиля)
+    if (profile.coachMedia && profile.coachMedia.length > 0) {
+      console.log(`[coach_view_profile] Sending ${profile.coachMedia.length} media files as group with caption`);
+      
+      // Проверяем длину текста (Telegram ограничивает caption до 1024 символов)
+      const maxCaptionLength = 1024;
+      let caption = profileText;
+      
+      if (caption.length > maxCaptionLength) {
+        console.log(`[coach_view_profile] Caption too long (${caption.length}), truncating`);
+        caption = caption.substring(0, maxCaptionLength - 30) + '\n\n...(полный текст ниже)';
+      }
+      
+      try {
+        // Telegram поддерживает media group до 10 файлов
+        if (profile.coachMedia.length <= 10) {
+          const mediaGroup = profile.coachMedia.map((media, index) => {
+            const baseMedia = {
+              type: media.type as 'photo' | 'video',
+              media: media.fileId
+            };
+            
+            // Добавляем caption только к первому элементу
+            if (index === 0) {
+              return {
+                ...baseMedia,
+                caption,
+                parse_mode: 'HTML' as const
+              };
+            }
+            
+            return baseMedia;
+          });
+          
+          await getBot().sendMediaGroup(chatId, mediaGroup);
+        } else {
+          // Если больше 10, отправляем первую группу с caption, остальные без
+          console.log(`[coach_view_profile] Too many media files (${profile.coachMedia.length}), sending in batches`);
+          
+          for (let i = 0; i < profile.coachMedia.length; i += 10) {
+            const batch = profile.coachMedia.slice(i, i + 10);
+            const mediaGroup = batch.map((media, index) => {
+              const baseMedia = {
+                type: media.type as 'photo' | 'video',
+                media: media.fileId
+              };
+              
+              // Caption только к первому элементу первой группы
+              if (i === 0 && index === 0) {
+                return {
+                  ...baseMedia,
+                  caption,
+                  parse_mode: 'HTML' as const
+                };
+              }
+              
+              return baseMedia;
+            });
+            
+            await getBot().sendMediaGroup(chatId, mediaGroup);
+          }
+        }
+        
+        // Если текст был обрезан, отправляем полный текст отдельно
+        if (profileText.length > maxCaptionLength) {
+          await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${profileText}`, {
+            parse_mode: 'HTML'
+          });
+        }
+      } catch (error) {
+        console.error(`[coach_view_profile] Error sending media group:`, error);
+        // Fallback: отправляем текст отдельно, затем медиа по одному
+        await getBot().sendMessage(chatId, profileText, {
+          parse_mode: 'HTML'
+        });
+        
+        for (const media of profile.coachMedia) {
+          try {
+            if (media.type === 'photo') {
+              await getBot().sendPhoto(chatId, media.fileId);
+            } else if (media.type === 'video') {
+              await getBot().sendVideo(chatId, media.fileId);
+            }
+          } catch (e) {
+            console.error(`[coach_view_profile] Error sending individual media:`, e);
+          }
+        }
+      }
+    } else {
+      // Если медиа нет, отправляем просто текст
+      await getBot().sendMessage(chatId, profileText, {
+        parse_mode: 'HTML'
+      });
+    }
+    
+    // Отправляем сообщение с кнопками управления
+    await getBot().sendMessage(chatId, 
+      `${visibilityStatus}`, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование профиля тренера
+  if (data === 'coach_edit_profile') {
+    await getBot().sendMessage(chatId, '✏️ <b>Редактирование профиля</b>\n\nВыберите, что хотите изменить:', {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '👤 Имя', callback_data: 'coach_edit_name' }],
+          [{ text: '📍 Районы', callback_data: 'coach_edit_districts' }],
+          [{ text: '💰 Цены', callback_data: 'coach_edit_prices' }],
+          [{ text: '📅 Дни доступности', callback_data: 'coach_edit_days' }],
+          [{ text: '📝 О себе', callback_data: 'coach_edit_about' }],
+          [{ text: '📸 Медиа', callback_data: 'coach_edit_media' }],
+          [{ text: '📱 Контакт', callback_data: 'coach_edit_contact' }],
+          [{ text: '« Назад', callback_data: 'coach_view_profile' }]
+        ]
+      }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование имени тренера
+  if (data === 'coach_edit_name') {
+    const profile = await getUserProfile(userId);
+    const currentName = profile?.coachName || 'не указано';
+    
+    coachEditStates.set(userId, CoachEditStep.NAME);
+    
+    await getBot().sendMessage(chatId, 
+      `✏️ <b>Изменение имени</b>\n\n` +
+      `Текущее имя: <b>${currentName}</b>\n\n` +
+      `Введите новое имя (Имя + Фамилия):`,
+      { parse_mode: 'HTML', reply_markup: {
+        inline_keyboard: [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
+      }}
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование районов
+  if (data === 'coach_edit_districts') {
+    const profile = await getUserProfile(userId);
+    coachEditStates.set(userId, CoachEditStep.DISTRICTS);
+    
+    await getBot().sendMessage(chatId, 
+      `✏️ <b>Изменение районов</b>\n\n` +
+      `Выберите районы, в которых вы тренируете:`,
+      { 
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: getCoachDistrictKeyboard(profile?.coachDistricts || [])
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование цен
+  if (data === 'coach_edit_prices') {
+    const profile = await getUserProfile(userId);
+    
+    await getBot().sendMessage(chatId,
+      `💰 <b>Текущие цены:</b>\n\n` +
+      `Индивидуальная: ${profile?.coachPriceIndividual || 0} ₽/час\n` +
+      `Сплит: ${profile?.coachPriceSplit || 0} ₽/час с человека\n` +
+      `Групповая: ${profile?.coachPriceGroup || 0} ₽/час с человека\n\n` +
+      `Что хотите изменить?`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Индивидуальная', callback_data: 'coach_edit_price_individual' }],
+            [{ text: 'Сплит', callback_data: 'coach_edit_price_split' }],
+            [{ text: 'Групповая', callback_data: 'coach_edit_price_group' }],
+            [{ text: '« Назад', callback_data: 'coach_edit_profile' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование цены индивидуальной тренировки
+  if (data === 'coach_edit_price_individual') {
+    const profile = await getUserProfile(userId);
+    const currentPrice = profile?.coachPriceIndividual || 0;
+    
+    coachEditStates.set(userId, CoachEditStep.PRICE_INDIVIDUAL);
+    
+    await getBot().sendMessage(chatId,
+      `💰 <b>Цена индивидуальной тренировки</b>\n\n` +
+      `Текущая цена: <b>${currentPrice} ₽/час</b>\n\n` +
+      `Введите новую цену (только число, 0 если не ведете):`,
+      { parse_mode: 'HTML', reply_markup: {
+        inline_keyboard: [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
+      }}
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование цены сплит тренировки
+  if (data === 'coach_edit_price_split') {
+    const profile = await getUserProfile(userId);
+    const currentPrice = profile?.coachPriceSplit || 0;
+    
+    coachEditStates.set(userId, CoachEditStep.PRICE_SPLIT);
+    
+    await getBot().sendMessage(chatId,
+      `💰 <b>Цена сплит тренировки</b>\n\n` +
+      `Текущая цена: <b>${currentPrice} ₽/час с человека</b>\n\n` +
+      `Введите новую цену (только число, 0 если не ведете):`,
+      { parse_mode: 'HTML', reply_markup: {
+        inline_keyboard: [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
+      }}
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование цены групповой тренировки
+  if (data === 'coach_edit_price_group') {
+    const profile = await getUserProfile(userId);
+    const currentPrice = profile?.coachPriceGroup || 0;
+    
+    coachEditStates.set(userId, CoachEditStep.PRICE_GROUP);
+    
+    await getBot().sendMessage(chatId,
+      `💰 <b>Цена групповой тренировки</b>\n\n` +
+      `Текущая цена: <b>${currentPrice} ₽/час с человека</b>\n\n` +
+      `Введите новую цену (только число, 0 если не ведете):`,
+      { parse_mode: 'HTML', reply_markup: {
+        inline_keyboard: [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
+      }}
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование дней доступности
+  if (data === 'coach_edit_days') {
+    const profile = await getUserProfile(userId);
+    coachEditStates.set(userId, CoachEditStep.DAYS);
+    
+    await getBot().sendMessage(chatId,
+      `📅 <b>Изменение дней доступности</b>\n\n` +
+      `Выберите дни, когда вы свободны:`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: getCoachDaysKeyboard(profile?.coachAvailableDays || [])
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование информации о себе
+  if (data === 'coach_edit_about') {
+    const profile = await getUserProfile(userId);
+    const currentAbout = profile?.coachAbout || 'не указано';
+    
+    coachEditStates.set(userId, CoachEditStep.ABOUT);
+    
+    await getBot().sendMessage(chatId,
+      `📝 <b>Изменение информации о себе</b>\n\n` +
+      `Текущий текст:\n${currentAbout}\n\n` +
+      `Введите новый текст (максимум 1000 символов):`,
+      { parse_mode: 'HTML', reply_markup: {
+        inline_keyboard: [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
+      }}
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование медиа
+  if (data === 'coach_edit_media') {
+    const profile = await getUserProfile(userId);
+    const mediaCount = profile?.coachMedia?.length || 0;
+    
+    coachEditStates.set(userId, CoachEditStep.MEDIA);
+    
+    await getBot().sendMessage(chatId,
+      `📸 <b>Изменение медиа-файлов</b>\n\n` +
+      `Текущее количество: <b>${mediaCount}</b>\n\n` +
+      `Отправьте фото или видео, чтобы добавить.\n` +
+      `Нажмите "Готово" чтобы завершить.`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🗑 Удалить все медиа', callback_data: 'coach_edit_media_clear' }],
+            [{ text: '✔️ Готово', callback_data: 'coach_edit_done' }],
+            [{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Очистка всех медиа
+  if (data === 'coach_edit_media_clear') {
+    const profile = await getUserProfile(userId);
+    if (profile) {
+      profile.coachMedia = [];
+      await saveUserProfile(userId, profile);
+      
+      await getBot().sendMessage(chatId, '✅ Все медиа-файлы удалены', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад', callback_data: 'coach_edit_profile' }]]
+        }
+      });
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Редактирование контакта
+  if (data === 'coach_edit_contact') {
+    const profile = await getUserProfile(userId);
+    const currentContact = profile?.coachContact || 'не указан';
+    const username = query.from?.username;
+    
+    coachEditStates.set(userId, CoachEditStep.CONTACT);
+    
+    let message = `📱 <b>Изменение контакта</b>\n\n` +
+      `Текущий контакт: <b>${currentContact}</b>\n\n`;
+    
+    const keyboard: any[] = [];
+    
+    if (username) {
+      message += `Введите новый контакт или используйте текущий @${username}:`;
+      keyboard.push([{ text: `✅ Использовать @${username}`, callback_data: 'coach_edit_contact_use_username' }]);
+    } else {
+      message += `Введите новый контакт:`;
+    }
+    
+    keyboard.push([{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]);
+    
+    await getBot().sendMessage(chatId, message, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: keyboard }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Использовать текущий username как контакт
+  if (data === 'coach_edit_contact_use_username') {
+    const profile = await getUserProfile(userId);
+    const username = query.from?.username;
+    
+    if (profile && username) {
+      profile.coachContact = `@${username}`;
+      await saveUserProfile(userId, profile);
+      
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, `✅ Контакт обновлен: @${username}`, {
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Завершение редактирования
+  if (data === 'coach_edit_done') {
+    coachEditStates.delete(userId);
+    
+    await getBot().sendMessage(chatId, '✅ Изменения сохранены!', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '👀 Посмотреть профиль', callback_data: 'coach_view_profile' }]]
+      }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Отмена редактирования
+  if (data === 'coach_edit_cancel') {
+    coachEditStates.delete(userId);
+    
+    await getBot().sendMessage(chatId, 'Редактирование отменено', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+      }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Скрыть/показать профиль
+  if (data === 'coach_hide_profile') {
+    const profile = await getUserProfile(userId);
+    
+    if (!profile) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Профиль не найден' });
+      return;
+    }
+    
+    // Переключаем флаг видимости профиля
+    profile.coachHidden = !profile.coachHidden;
+    await saveUserProfile(userId, profile);
+    
+    let message: string;
+    if (profile.coachHidden) {
+      message = '💤 <b>Профиль на паузе</b> — мы не будем показывать вас пользователям и присылать заявки.';
+    } else {
+      message = '✅ <b>Профиль снова активен</b> — мы снова будем показывать вас пользователям.';
+    }
+    
+    await getBot().sendMessage(chatId, message, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '👀 Посмотреть профиль', callback_data: 'coach_view_profile' }],
+          [{ text: '« На главную', callback_data: 'action_home' }]
+        ]
+      }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Подбор тренера - начало
+  if (data === 'find_coach_start') {
+    await getBot().sendMessage(chatId, 
+      'Ответьте на один вопрос — и я покажу подходящих тренеров.\n\n' +
+      '<b>Как хотите тренироваться?</b>',
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🎾 1 на 1 (тренер + я)', callback_data: 'find_coach_type_individual' }],
+            [{ text: '👥 Будем вдвоём / втроём (приведу друзей)', callback_data: 'find_coach_type_group' }],
+            [{ text: '⏭ Не важно', callback_data: 'find_coach_type_any' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Подбор тренера - индивидуальная тренировка
+  if (data === 'find_coach_type_individual') {
+    // TODO: Показать список тренеров, которые ведут индивидуальные тренировки
+    await getBot().sendMessage(chatId, '🔍 Ищу тренеров для индивидуальных тренировок...');
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Подбор тренера - групповая тренировка
+  if (data === 'find_coach_type_group') {
+    // TODO: Показать список тренеров, которые ведут групповые/сплит тренировки
+    await getBot().sendMessage(chatId, '🔍 Ищу тренеров для групповых тренировок...');
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Подбор тренера - любой тип
+  if (data === 'find_coach_type_any') {
+    // TODO: Показать всех тренеров
+    await getBot().sendMessage(chatId, '🔍 Ищу всех доступных тренеров...');
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
   // Кнопка "Вернуться на главную"
   if (data === 'action_home') {
     const profile = await getUserProfile(userId);
@@ -3102,8 +4954,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       reply_markup: {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }]
-          // [{ text: '👤 Профиль' }]
+          [{ text: '🏓 Найти корт (падел)' }],
+          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }]
         ],
         resize_keyboard: true
       }
