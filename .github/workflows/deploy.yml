@@ -45,8 +45,12 @@ jobs:
           USE_BIGQUERY: ${{ secrets.USE_BIGQUERY }}
           BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
           BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
+          COACH_MEDIA_BUCKET: ${{ secrets.COACH_MEDIA_BUCKET }}
         run: |
           ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
+          if [ -n "${COACH_MEDIA_BUCKET}" ]; then
+            ENV_VARS="${ENV_VARS},COACH_MEDIA_BUCKET=${COACH_MEDIA_BUCKET}"
+          fi
           if [ -n "${USE_BIGQUERY}" ]; then
             ENV_VARS="${ENV_VARS},USE_BIGQUERY=${USE_BIGQUERY}"
           fi
@@ -94,6 +98,11 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           COACH_MEDIA_BUCKET: ${{ secrets.COACH_MEDIA_BUCKET }}
         run: |
+          if [ -z "$COACH_MEDIA_BUCKET" ]; then
+            echo "❌ Error: COACH_MEDIA_BUCKET secret is not set in GitHub Secrets"
+            exit 1
+          fi
+          echo "✅ COACH_MEDIA_BUCKET is set: $COACH_MEDIA_BUCKET"
           gcloud functions deploy uploadCoachMedia \
             --gen2 \
             --runtime=nodejs20 \
