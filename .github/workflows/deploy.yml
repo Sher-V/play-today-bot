@@ -133,21 +133,18 @@ jobs:
           CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
         run: |
           QUEUE_NAME=${CLOUD_TASKS_QUEUE:-media-upload-queue}
-          # Получаем project number для Cloud Tasks service account
-          PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format='value(projectNumber)')
-          # Cloud Tasks service account (используется в OIDC токене)
-          CLOUD_TASKS_SA="${PROJECT_NUMBER}@cloudtasks-service.iam.gserviceaccount.com"
+          # App Engine default service account (используется в OIDC токене)
+          APP_ENGINE_SA="${PROJECT_ID}@appspot.gserviceaccount.com"
           echo "Project ID: ${PROJECT_ID}"
-          echo "Project Number: ${PROJECT_NUMBER}"
-          echo "Cloud Tasks Service Account: ${CLOUD_TASKS_SA}"
-          echo "Granting Cloud Run Invoker role to ${CLOUD_TASKS_SA} for uploadCoachMedia..."
+          echo "App Engine Service Account: ${APP_ENGINE_SA}"
+          echo "Granting Cloud Run Invoker role to ${APP_ENGINE_SA} for uploadCoachMedia..."
           # Для gen2 функций используем Cloud Run команды
           if gcloud run services add-iam-policy-binding uploadCoachMedia \
             --region=${{ env.REGION }} \
-            --member="serviceAccount:${CLOUD_TASKS_SA}" \
+            --member="serviceAccount:${APP_ENGINE_SA}" \
             --role="roles/run.invoker" \
             --platform=managed; then
-            echo "✅ Permissions granted successfully to ${CLOUD_TASKS_SA}"
+            echo "✅ Permissions granted successfully to ${APP_ENGINE_SA}"
           else
             echo "⚠️ Warning: Could not grant permissions, trying to verify existing permissions..."
             # Проверяем текущие права
