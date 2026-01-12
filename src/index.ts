@@ -1512,8 +1512,7 @@ async function handleStart(msg: TelegramBot.Message) {
     reply_markup: {
       keyboard: [
         [{ text: '🎾 Найти корт (теннис)' }],
-        [{ text: '🏓 Найти корт (падел)' }],
-        [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }],
+        [{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }],
       ],
       resize_keyboard: true
     }
@@ -1822,6 +1821,55 @@ async function handleMessage(msg: TelegramBot.Message) {
           );
         }
       }
+      break;
+    case '⚙️ Еще':
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'more',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      // Показываем подменю "Еще"
+      await getBot().sendMessage(chatId, 'Выберите действие:', {
+        reply_markup: {
+          keyboard: [
+            [{ text: '🏓 Найти корт (падел)' }],
+            [{ text: '⭐ Избранные корты' }],
+            [{ text: '◀️ Назад' }],
+          ],
+          resize_keyboard: true
+        }
+      });
+      break;
+    case '◀️ Назад':
+      // Возвращаемся на главное меню
+      const profile = userId ? await getUserProfile(userId) : null;
+      const userName = profile?.name || msg.from?.first_name || 'друг';
+      
+      await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
+        parse_mode: 'HTML',
+        reply_markup: {
+          keyboard: [
+            [{ text: '🎾 Найти корт (теннис)' }],
+            [{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }],
+          ],
+          resize_keyboard: true
+        }
+      });
       break;
     case '💬 Чат участников':
       // Отслеживаем клик на текстовую кнопку
@@ -3054,8 +3102,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       reply_markup: {
         keyboard: [
           [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '⭐ Избранные корты' }, { text: '💬 Чат участников' }]
+          [{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }]
           // [{ text: '👤 Профиль' }]
         ],
         resize_keyboard: true
