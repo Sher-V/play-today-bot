@@ -88,15 +88,72 @@ jobs:
             --timeout=120s \
             --quiet
 
+      - name: Deploy Upload Coach Media Function
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          gcloud functions deploy uploadCoachMedia \
+            --gen2 \
+            --runtime=nodejs20 \
+            --trigger-http \
+            --no-allow-unauthenticated \
+            --entry-point=uploadCoachMedia \
+            --set-env-vars "COACH_MEDIA_BUCKET=${PROJECT_ID}-coach-media,BOT_TOKEN=${BOT_TOKEN},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
+            --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
+            --region=${{ env.REGION }} \
+            --source=. \
+            --memory=256MB \
+            --timeout=300s \
+            --quiet
+
+      - name: Deploy Send Coach Reminder Function
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          USE_BIGQUERY: ${{ secrets.USE_BIGQUERY }}
+          BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
+          BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
+        run: |
+          ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
+          if [ -n "${USE_BIGQUERY}" ]; then
+            ENV_VARS="${ENV_VARS},USE_BIGQUERY=${USE_BIGQUERY}"
+          fi
+          if [ -n "${BIGQUERY_DATASET}" ]; then
+            ENV_VARS="${ENV_VARS},BIGQUERY_DATASET=${BIGQUERY_DATASET}"
+          fi
+          if [ -n "${BIGQUERY_TABLE}" ]; then
+            ENV_VARS="${ENV_VARS},BIGQUERY_TABLE=${BIGQUERY_TABLE}"
+          fi
+          gcloud functions deploy sendCoachReminder \
+            --gen2 \
+            --runtime=nodejs20 \
+            --trigger-http \
+            --no-allow-unauthenticated \
+            --entry-point=sendCoachReminder \
+            --set-env-vars "${ENV_VARS}" \
+            --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
+            --region=${{ env.REGION }} \
+            --source=. \
+            --memory=256MB \
+            --timeout=60s \
+            --quiet
+
       - name: Get Function URLs
         id: get-urls
         run: |
           BOT_URL=$(gcloud functions describe playTodayBot --region=${{ env.REGION }} --format='value(serviceConfig.uri)' 2>/dev/null)
           SLOTS_URL=$(gcloud functions describe slotsFetcher --region=${{ env.REGION }} --format='value(serviceConfig.uri)' 2>/dev/null)
+          UPLOAD_MEDIA_URL=$(gcloud functions describe uploadCoachMedia --region=${{ env.REGION }} --format='value(serviceConfig.uri)' 2>/dev/null)
+          REMINDER_URL=$(gcloud functions describe sendCoachReminder --region=${{ env.REGION }} --format='value(serviceConfig.uri)' 2>/dev/null)
           echo "bot_url=$BOT_URL" >> $GITHUB_OUTPUT
           echo "slots_url=$SLOTS_URL" >> $GITHUB_OUTPUT
+          echo "upload_media_url=$UPLOAD_MEDIA_URL" >> $GITHUB_OUTPUT
+          echo "reminder_url=$REMINDER_URL" >> $GITHUB_OUTPUT
           echo "✅ Telegram Bot URL: $BOT_URL"
           echo "✅ Slots Fetcher URL: $SLOTS_URL"
+          echo "✅ Upload Coach Media URL: $UPLOAD_MEDIA_URL"
+          echo "✅ Send Coach Reminder URL: $REMINDER_URL"
 
       - name: Deployment Summary
         run: |
@@ -105,6 +162,8 @@ jobs:
           echo "### Deployed Functions:" >> $GITHUB_STEP_SUMMARY
           echo "- **Telegram Bot**: ${{ steps.get-urls.outputs.bot_url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Slots Fetcher**: ${{ steps.get-urls.outputs.slots_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upload Coach Media**: ${{ steps.get-urls.outputs.upload_media_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Send Coach Reminder**: ${{ steps.get-urls.outputs.reminder_url }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
           echo "1. Update Telegram webhook: \`curl -X POST \"https://api.telegram.org/bot\$BOT_TOKEN/setWebhook\" -d \"url=${{ steps.get-urls.outputs.bot_url }}\"\`" >> $GITHUB_STEP_SUMMARY
