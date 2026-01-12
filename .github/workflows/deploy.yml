@@ -38,31 +38,6 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Create Cloud Tasks Queue (if needed)
-        env:
-          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
-        run: |
-          QUEUE_NAME=${CLOUD_TASKS_QUEUE:-media-upload-queue}
-          LOCATION=${{ env.REGION }}
-          echo "Checking Cloud Tasks queue: ${QUEUE_NAME} in ${LOCATION}"
-          if gcloud tasks queues describe ${QUEUE_NAME} --location=${LOCATION} --project=${PROJECT_ID} 2>/dev/null; then
-            echo "✅ Queue ${QUEUE_NAME} already exists"
-          else
-            echo "📝 Creating queue ${QUEUE_NAME}..."
-            gcloud tasks queues create ${QUEUE_NAME} \
-              --location=${LOCATION} \
-              --project=${PROJECT_ID} \
-              --max-concurrent-dispatches=10 \
-              --max-attempts=3 \
-              --max-retry-duration=3600s \
-              --min-backoff=60s \
-              --max-backoff=600s
-            echo "✅ Queue created successfully!"
-            echo "⏳ Waiting 60 seconds for queue to initialize..."
-            sleep 60
-          fi
-
       - name: Deploy Telegram Bot Function
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
