@@ -92,6 +92,7 @@ jobs:
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          COACH_MEDIA_BUCKET: ${{ secrets.COACH_MEDIA_BUCKET }}
         run: |
           gcloud functions deploy uploadCoachMedia \
             --gen2 \
@@ -99,7 +100,7 @@ jobs:
             --trigger-http \
             --no-allow-unauthenticated \
             --entry-point=uploadCoachMedia \
-            --set-env-vars "COACH_MEDIA_BUCKET=${PROJECT_ID}-coach-media,BOT_TOKEN=${BOT_TOKEN},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
+            --set-env-vars "COACH_MEDIA_BUCKET=${COACH_MEDIA_BUCKET},BOT_TOKEN=${BOT_TOKEN},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
             --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
             --region=${{ env.REGION }} \
             --source=. \
