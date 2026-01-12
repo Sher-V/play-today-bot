@@ -38,6 +38,31 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Create Cloud Tasks Queue (if needed)
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
+        run: |
+          QUEUE_NAME=${CLOUD_TASKS_QUEUE:-media-upload-queue}
+          LOCATION=${{ env.REGION }}
+          echo "Checking Cloud Tasks queue: ${QUEUE_NAME} in ${LOCATION}"
+          if gcloud tasks queues describe ${QUEUE_NAME} --location=${LOCATION} --project=${PROJECT_ID} 2>/dev/null; then
+            echo "✅ Queue ${QUEUE_NAME} already exists"
+          else
+            echo "📝 Creating queue ${QUEUE_NAME}..."
+            gcloud tasks queues create ${QUEUE_NAME} \
+              --location=${LOCATION} \
+              --project=${PROJECT_ID} \
+              --max-concurrent-dispatches=10 \
+              --max-attempts=3 \
+              --max-retry-duration=3600s \
+              --min-backoff=60s \
+              --max-backoff=600s
+            echo "✅ Queue created successfully!"
+            echo "⏳ Waiting 60 seconds for queue to initialize..."
+            sleep 60
+          fi
+
       - name: Deploy Telegram Bot Function
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -46,6 +71,7 @@ jobs:
           BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
           BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
           COACH_MEDIA_BUCKET: ${{ secrets.COACH_MEDIA_BUCKET }}
+          CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
         run: |
           ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_PROJECT=${PROJECT_ID}"
           if [ -n "${COACH_MEDIA_BUCKET}" ]; then
@@ -54,6 +80,10 @@ jobs:
           # Формируем URL функции uploadCoachMedia (будет установлен после её деплоя)
           MEDIA_UPLOAD_FUNCTION_URL="https://${{ env.REGION }}-${PROJECT_ID}.cloudfunctions.net/uploadCoachMedia"
           ENV_VARS="${ENV_VARS},MEDIA_UPLOAD_FUNCTION_URL=${MEDIA_UPLOAD_FUNCTION_URL}"
+          # Устанавливаем переменные для Cloud Tasks (если заданы)
+          if [ -n "${CLOUD_TASKS_QUEUE}" ]; then
+            ENV_VARS="${ENV_VARS},CLOUD_TASKS_QUEUE=${CLOUD_TASKS_QUEUE}"
+          fi
           if [ -n "${USE_BIGQUERY}" ]; then
             ENV_VARS="${ENV_VARS},USE_BIGQUERY=${USE_BIGQUERY}"
           fi
@@ -119,6 +149,23 @@ jobs:
             --memory=256MB \
             --timeout=300s \
             --quiet
+
+      - name: Grant Cloud Tasks permissions to uploadCoachMedia
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
+        run: |
+          QUEUE_NAME=${CLOUD_TASKS_QUEUE:-media-upload-queue}
+          # Получаем service account для Cloud Tasks
+          PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format='value(projectNumber)')
+          SERVICE_ACCOUNT="${PROJECT_NUMBER}@cloudtasks-service.iam.gserviceaccount.com"
+          echo "Granting Cloud Functions Invoker role to ${SERVICE_ACCOUNT}..."
+          gcloud functions add-iam-policy-binding uploadCoachMedia \
+            --gen2 \
+            --region=${{ env.REGION }} \
+            --member="serviceAccount:${SERVICE_ACCOUNT}" \
+            --role="roles/cloudfunctions.invoker" \
+            --quiet || echo "⚠️ Warning: Could not grant permissions (may already be set)"
 
       - name: Deploy Send Coach Reminder Function
         env:
