@@ -3,6 +3,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Storage } from '@google-cloud/storage';
 import { Firestore } from '@google-cloud/firestore';
+import { CloudTasksClient } from '@google-cloud/tasks';
 import * as fs from 'fs';
 import * as path from 'path';
 import { trackButtonClick, generateSessionId, parseButtonType } from './analytics';
@@ -27,7 +28,7 @@ import {
 } from './constants/padel-constants';
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
-import { getCourtPrice } from './utils/config-utils';
+import { getCourtPrice, getBotToken, isDev } from './utils/config-utils';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -75,9 +76,6 @@ const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
 // Storage инициализируем всегда (нужен для загрузки медиа тренеров)
 const storage = new Storage();
 
-// Режим работы: dev (polling) или prod (webhook)
-const isDev = process.env.NODE_ENV === 'development';
-
 /**
  * Загружает медиа файл в Cloud Storage
  * @param fileId - file_id от Telegram
@@ -90,7 +88,7 @@ const isDev = process.env.NODE_ENV === 'development';
  */
 async function createVideoUploadTask(fileId: string, userId: number): Promise<boolean> {
   try {
-    const BOT_TOKEN = isDev ? process.env.BOT_TOKEN_DEV : process.env.BOT_TOKEN;
+    const BOT_TOKEN = getBotToken();
 
     if (!BOT_TOKEN) {
       console.error('[createVideoUploadTask] Bot token not found');
@@ -223,9 +221,9 @@ async function uploadMediaToStorage(fileId: string, userId: number, fileType: 'p
     }
 
     // Для фото загружаем в GCS синхронно
-    const BOT_TOKEN = isDev ? process.env.BOT_TOKEN_DEV : process.env.BOT_TOKEN;
+    const BOT_TOKEN = getBotToken();
     if (!BOT_TOKEN) {
-      console.error('Bot token not found');
+      console.error('[uploadMediaToStorage] Bot token not found');
       return null;
     }
     
@@ -284,10 +282,9 @@ let bot: TelegramBot | null = null;
 
 function getBot(): TelegramBot {
   if (!bot) {
-    const token = isDev ? process.env.BOT_TOKEN_DEV : process.env.BOT_TOKEN;
-    const tokenName = isDev ? 'BOT_TOKEN_DEV' : 'BOT_TOKEN';
+    const token = getBotToken();
     if (!token) {
-      throw new Error(`${tokenName} не найден в переменных окружения`);
+      throw new Error('Bot token не найден в переменных окружения');
     }
     // В dev режиме используем polling, в prod - только API без polling
     bot = new TelegramBot(token, { polling: isDev });
@@ -398,6 +395,13 @@ interface UserProfile {
   coachAbout?: string; // Информация о тренере
   coachContact?: string; // Контакт тренера (никнейм или телефон)
   coachHidden?: boolean; // Флаг скрытого профиля (не показывать в каталоге)
+  // Информация о последнем поиске корта
+  lastCourtSearch?: {
+    date: string; // Дата поиска (YYYY-MM-DD)
+    time: string; // Время поиска (HH:MM)
+    location: string; // Локация поиска (название района)
+    timestamp: number; // Unix timestamp для отслеживания
+  };
   updatedAt?: Date;
 }
 
@@ -406,6 +410,7 @@ const firestore = new Firestore();
 
 // Коллекция пользователей в Firestore
 const USERS_COLLECTION = 'users';
+const REQUESTS_COLLECTION = 'coachRequests';
 
 /**
  * Получает профиль пользователя из Firestore
@@ -570,10 +575,102 @@ interface CoachSearchState {
   trainingType: 'individual' | 'group' | 'any';  // Тип тренировки
 }
 
+// Информация о заявке для отслеживания
+interface CoachRequest {
+  userId: number;  // ID клиента
+  coachUserId: number;  // ID тренера
+  userName: string;  // Имя клиента
+  coachName: string;  // Имя тренера
+  coachContact: string;  // Контакт тренера
+  timestamp: number;  // Время отправки заявки
+  reminderSent: boolean;  // Было ли отправлено напоминание
+  // Информация о поиске корта клиентом
+  courtSearchDate?: string;  // Дата поиска (YYYY-MM-DD)
+  courtSearchTime?: string;  // Время поиска (HH:MM)
+  courtSearchLocation?: string;  // Локация поиска
+}
+
 const coachSearchStates = new Map<number, CoachSearchState>();
 
 // Хранилище для отслеживания текущего шага редактирования профиля
 const coachEditStates = new Map<number, CoachEditStep>();
+
+/**
+ * Создает Cloud Task для отправки напоминания через 1 час
+ * В dev режиме использует прямой HTTP вызов или setTimeout
+ */
+async function createReminderTask(requestKey: string) {
+  const reminderFunctionUrl = process.env.REMINDER_FUNCTION_URL;
+  const projectId = process.env.GCP_PROJECT;
+  const location = process.env.CLOUD_TASKS_LOCATION || 'us-central1';
+  const queue = process.env.CLOUD_TASKS_QUEUE || 'default';
+
+  // Задержка: 10 секунд в dev, 1 час (3600 секунд) в production
+  const delaySeconds = isDev ? 10 : 3600;
+  const delayMs = delaySeconds * 1000;
+
+  // В dev режиме: если есть URL функции, используем прямой HTTP вызов через setTimeout
+  if (isDev && reminderFunctionUrl) {
+    console.log(`[createReminderTask] Scheduling direct HTTP call in ${delaySeconds}s for request ${requestKey}`);
+    
+    setTimeout(async () => {
+      try {
+        console.log(`[createReminderTask] Calling reminder function for ${requestKey}`);
+        const response = await fetch(reminderFunctionUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ requestKey })
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[createReminderTask] Function returned error: ${response.status} ${errorText}`);
+        } else {
+          console.log(`[createReminderTask] Reminder sent successfully for ${requestKey}`);
+        }
+      } catch (error) {
+        console.error(`[createReminderTask] Error calling reminder function:`, error);
+      }
+    }, delayMs);
+    
+    return;
+  }
+
+  // Production или dev с Cloud Tasks: используем Cloud Tasks
+  if (!reminderFunctionUrl || !projectId) {
+    console.log('[createReminderTask] Missing configuration (REMINDER_FUNCTION_URL or GCP_PROJECT), skipping reminder');
+    return;
+  }
+
+  try {
+    const client = new CloudTasksClient();
+    const parent = client.queuePath(projectId, location, queue);
+
+    const scheduleTime = Math.floor(Date.now() / 1000) + delaySeconds;
+
+    const task = {
+      httpRequest: {
+        httpMethod: 'POST' as const,
+        url: reminderFunctionUrl,
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: Buffer.from(JSON.stringify({ requestKey })).toString('base64')
+      },
+      scheduleTime: {
+        seconds: scheduleTime
+      }
+    };
+
+    const [response] = await client.createTask({ parent, task });
+    console.log(`[createReminderTask] Created Cloud Task ${response.name} for request ${requestKey} (delay: ${delaySeconds}s)`);
+  } catch (error) {
+    console.error('[createReminderTask] Error creating Cloud Task:', error);
+    throw error;
+  }
+}
 
 /**
  * Получает список активных тренеров из Firestore с фильтрацией
@@ -658,7 +755,8 @@ function formatCoachCard(profile: UserProfile, currentIndex: number, totalCoache
       center: 'Центр',
       east: 'Восток',
       south: 'Юг',
-      suburbs: 'Подмосковье'
+      suburbs: 'Подмосковье',
+      any: 'любой'
     };
     const districts = profile.coachDistricts.map(d => locationLabels[d] || d).join(', ');
     text += `📍 <b>Районы:</b> ${districts}\n\n`;
@@ -2086,6 +2184,8 @@ async function showCoachCard(
   searchState: CoachSearchState,
   messageId?: number
 ) {
+  console.log(`[showCoachCard] Showing coach card for user ${userId}, index ${searchState.currentIndex}/${searchState.coachIds.length - 1}, messageId: ${messageId || 'none'}`);
+  
   const coachUserId = searchState.coachIds[searchState.currentIndex];
   const coachProfile = await getUserProfile(parseInt(coachUserId));
   
@@ -2118,7 +2218,12 @@ async function showCoachCard(
   
   // Кнопка "Показать все медиа" если медиа больше 1
   if (coachProfile.coachMedia && coachProfile.coachMedia.length > 1) {
-    buttons.push([{ text: '📸 Показать все медиа', callback_data: `coach_show_media_${coachUserId}` }]);
+    buttons.push([{ text: '📸 Показать другие фото/видео', callback_data: `coach_show_media_${coachUserId}` }]);
+  }
+  
+  // Кнопка "Показать всех тренеров"
+  if (searchState.coachIds.length > 1) {
+    buttons.push([{ text: '👥 Показать всех тренеров', callback_data: 'coach_show_all' }]);
   }
   
   // Кнопка отправки заявки
@@ -2139,6 +2244,20 @@ async function showCoachCard(
   // Если есть медиа, отправляем первое медиа с описанием
   if (coachProfile.coachMedia && coachProfile.coachMedia.length > 0) {
     const firstMedia = coachProfile.coachMedia[0];
+    
+    // При редактировании сообщения с медиа - удаляем старое и отправляем новое
+    if (messageId) {
+      console.log(`[showCoachCard] Deleting old message ${messageId} with media`);
+      try {
+        await getBot().deleteMessage(chatId, messageId);
+        console.log(`[showCoachCard] Successfully deleted message ${messageId}`);
+      } catch (error) {
+        console.error('[showCoachCard] Error deleting message:', error);
+        // Продолжаем даже если не удалось удалить
+      }
+    } else {
+      console.log('[showCoachCard] No messageId provided, sending new message');
+    }
     
     try {
       if (firstMedia.type === 'photo') {
@@ -3147,6 +3266,53 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       // Сортируем по приоритету (избранные корты первыми)
       const filteredSlots = sortSlotsByPriority(filteredByTime, searchState.sport, favoriteCourts);
+      
+      // Сохраняем информацию о последнем поиске корта в профиль пользователя
+      try {
+        const locationLabels: Record<string, string> = {
+          north: 'Север',
+          west: 'Запад',
+          center: 'Центр',
+          east: 'Восток',
+          south: 'Юг',
+          'moscow-region': 'Подмосковье',
+          any: 'Любой район'
+        };
+        
+        const timeLabels: Record<string, string> = {
+          morning: 'Утро (до 12:00)',
+          afternoon: 'День (12:00-18:00)',
+          evening: 'Вечер (после 18:00)',
+          any: 'Любое время'
+        };
+        
+        // Форматируем локации
+        const locationStr = searchState.selectedLocations
+          .map(loc => locationLabels[loc] || loc)
+          .join(', ');
+        
+        // Форматируем время
+        const timeStr = searchState.selectedTimeSlots
+          .map(time => timeLabels[time] || time)
+          .join(', ');
+        
+        // Обновляем профиль с информацией о поиске
+        const currentProfile = await getUserProfile(userId);
+        if (currentProfile) {
+          currentProfile.lastCourtSearch = {
+            date: searchState.dateStr,
+            time: timeStr,
+            location: locationStr,
+            timestamp: Date.now()
+          };
+          await saveUserProfile(userId, currentProfile);
+          console.log(`[location_done] Saved court search info for user ${userId}`);
+        }
+      
+      } catch (error) {
+        console.error('[location_done] Error saving court search info:', error);
+        // Продолжаем даже если не удалось сохранить
+      }
       
       // Форматируем и отправляем сообщение
       const emoji = searchState.sport === SportType.PADEL ? '🏓' : '🎾';
@@ -4669,7 +4835,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         center: 'Центр',
         east: 'Восток',
         south: 'Юг',
-        suburbs: 'Подмосковье'
+        suburbs: 'Подмосковье',
+        any: 'любой'
       };
       const districts = profile.coachDistricts.map(d => locationLabels[d] || d).join(', ');
       profileText += `📍 <b>Районы:</b> ${districts}\n\n`;
@@ -5215,22 +5382,54 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Навигация по тренерам - следующий
   if (data === 'coach_next') {
+    console.log(`[coach_next] User ${userId} clicked next button`);
     const searchState = coachSearchStates.get(userId);
-    if (searchState && searchState.currentIndex < searchState.coachIds.length - 1) {
-      searchState.currentIndex++;
-      await showCoachCard(chatId, userId, searchState, query.message?.message_id);
+    
+    if (!searchState) {
+      console.error(`[coach_next] No search state found for user ${userId}`);
+      await safeAnswerCallbackQuery(query.id, { text: 'Состояние не найдено. Начните поиск заново.' });
+      return;
     }
+    
+    console.log(`[coach_next] Current index: ${searchState.currentIndex}, Total: ${searchState.coachIds.length}`);
+    
+    if (searchState.currentIndex < searchState.coachIds.length - 1) {
+      searchState.currentIndex++;
+      coachSearchStates.set(userId, searchState); // Сохраняем обновленное состояние
+      console.log(`[coach_next] New index: ${searchState.currentIndex}`);
+      await showCoachCard(chatId, userId, searchState, query.message?.message_id);
+    } else {
+      console.log(`[coach_next] Already at last coach, index: ${searchState.currentIndex}`);
+      await safeAnswerCallbackQuery(query.id, { text: 'Это последний тренер в списке' });
+    }
+    
     await safeAnswerCallbackQuery(query.id);
     return;
   }
 
   // Навигация по тренерам - предыдущий
   if (data === 'coach_prev') {
+    console.log(`[coach_prev] User ${userId} clicked previous button`);
     const searchState = coachSearchStates.get(userId);
-    if (searchState && searchState.currentIndex > 0) {
-      searchState.currentIndex--;
-      await showCoachCard(chatId, userId, searchState, query.message?.message_id);
+    
+    if (!searchState) {
+      console.error(`[coach_prev] No search state found for user ${userId}`);
+      await safeAnswerCallbackQuery(query.id, { text: 'Состояние не найдено. Начните поиск заново.' });
+      return;
     }
+    
+    console.log(`[coach_prev] Current index: ${searchState.currentIndex}, Total: ${searchState.coachIds.length}`);
+    
+    if (searchState.currentIndex > 0) {
+      searchState.currentIndex--;
+      coachSearchStates.set(userId, searchState); // Сохраняем обновленное состояние
+      console.log(`[coach_prev] New index: ${searchState.currentIndex}`);
+      await showCoachCard(chatId, userId, searchState, query.message?.message_id);
+    } else {
+      console.log(`[coach_prev] Already at first coach, index: ${searchState.currentIndex}`);
+      await safeAnswerCallbackQuery(query.id, { text: 'Это первый тренер в списке' });
+    }
+    
     await safeAnswerCallbackQuery(query.id);
     return;
   }
@@ -5274,6 +5473,106 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Показать всех тренеров
+  if (data === 'coach_show_all') {
+    const searchState = coachSearchStates.get(userId);
+    
+    if (!searchState || searchState.coachIds.length === 0) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Тренеры не найдены' });
+      return;
+    }
+    
+    // Формируем кнопки с именами и ценами тренеров
+    const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+    
+    for (let i = 0; i < searchState.coachIds.length; i++) {
+      const coachUserId = searchState.coachIds[i];
+      const coachProfile = await getUserProfile(parseInt(coachUserId));
+      
+      if (coachProfile) {
+        const coachName = coachProfile.coachName || 'Тренер';
+        const price = coachProfile.coachPriceIndividual || 0;
+        
+        // Формируем текст кнопки: "Имя - Цена ₽"
+        // Ограничение Telegram: максимум 64 символа на кнопку
+        let buttonText = '';
+        if (price > 0) {
+          buttonText = `${coachName} - ${price} ₽`;
+        } else {
+          buttonText = coachName;
+        }
+        
+        // Обрезаем текст если слишком длинный
+        const maxButtonLength = 60; // Оставляем запас
+        if (buttonText.length > maxButtonLength) {
+          buttonText = buttonText.substring(0, maxButtonLength - 3) + '...';
+        }
+        
+        buttons.push([{ 
+          text: buttonText, 
+          callback_data: `coach_select_${i}` 
+        }]);
+      }
+    }
+    
+    buttons.push([{ text: '🏠 На главную', callback_data: 'action_home' }]);
+    
+    const message = `👥 <b>Список тренеров (всего ${searchState.coachIds.length})</b>`;
+    const messageId = query.message?.message_id;
+    
+    // Редактируем существующее сообщение или отправляем новое
+    if (messageId) {
+      try {
+        // Пытаемся отредактировать существующее сообщение
+        await safeEditMessageText(message, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: buttons }
+        });
+      } catch (error) {
+        // Если не удалось отредактировать (например, сообщение с медиа),
+        // удаляем старое и отправляем новое
+        console.log('[coach_show_all] Cannot edit message, deleting and sending new');
+        try {
+          await getBot().deleteMessage(chatId, messageId);
+        } catch (deleteError) {
+          console.error('[coach_show_all] Error deleting message:', deleteError);
+        }
+        await getBot().sendMessage(chatId, message, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: buttons }
+        });
+      }
+    } else {
+      // Если нет messageId, просто отправляем новое сообщение
+      await getBot().sendMessage(chatId, message, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+      });
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Выбор тренера по номеру из списка
+  if (data && data.startsWith('coach_select_')) {
+    const indexStr = data.replace('coach_select_', '');
+    const index = parseInt(indexStr);
+    
+    const searchState = coachSearchStates.get(userId);
+    if (searchState && index >= 0 && index < searchState.coachIds.length) {
+      searchState.currentIndex = index;
+      coachSearchStates.set(userId, searchState);
+      // Передаем messageId для редактирования существующего сообщения со списком
+      await showCoachCard(chatId, userId, searchState, query.message?.message_id);
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
   // Отправить заявку тренеру
   if (data && data.startsWith('coach_request_')) {
     const coachUserId = data.replace('coach_request_', '');
@@ -5304,7 +5603,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       // Формируем сообщение для тренера
       let coachMessage = '🎾 <b>Новая заявка на тренировку!</b>\n\n';
-      coachMessage += `👤 <b>Игрок:</b> ${userName}\n`;
+      coachMessage += `👤 <b>Игрок:</b> <b>${userName}</b>\n`;
       coachMessage += `🏋️ <b>Формат:</b> ${trainingTypeText}\n`;
       
       if (userLevel) {
@@ -5324,10 +5623,18 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           center: 'Центр',
           east: 'Восток',
           south: 'Юг',
-          suburbs: 'Подмосковье'
+          suburbs: 'Подмосковье',
+          any: 'любой'
         };
         const districts = userDistricts.map(d => locationLabels[d] || d).join(', ');
         coachMessage += `📍 <b>Районы:</b> ${districts}\n`;
+      }
+      
+      // Добавляем информацию о последнем поиске корта
+      if (userProfile?.lastCourtSearch) {
+        const { date, time, location } = userProfile.lastCourtSearch;
+        coachMessage += `\n🗓 Игрок искал корт на <b>${date}</b> (${time})\n`;
+        coachMessage += `📍 в районе: ${location}\n`;
       }
       
       // Отправляем уведомление тренеру
@@ -5376,6 +5683,34 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           }
         }
       );
+      
+      // Сохраняем заявку в Firestore для отслеживания
+      const requestKey = `${userId}_${coachUserId}`;
+      const requestInfo: CoachRequest = {
+        userId,
+        coachUserId: parseInt(coachUserId),
+        userName,
+        coachName,
+        coachContact,
+        timestamp: Date.now(),
+        reminderSent: false,
+        // Сохраняем информацию о последнем поиске корта
+        courtSearchDate: userProfile?.lastCourtSearch?.date,
+        courtSearchTime: userProfile?.lastCourtSearch?.time,
+        courtSearchLocation: userProfile?.lastCourtSearch?.location
+      };
+      
+      await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).set(requestInfo);
+      console.log(`[coach_request] Request saved to Firestore: ${requestKey}`);
+      
+      // Создаем Cloud Task для отправки напоминания через 1 час
+      try {
+        await createReminderTask(requestKey);
+        console.log(`[coach_request] Scheduled reminder task for request ${requestKey}`);
+      } catch (error) {
+        console.error('[coach_request] Error creating reminder task:', error);
+        // Продолжаем даже если не удалось создать задачу напоминания
+      }
     } catch (error) {
       console.error('[coach_request] Error sending request:', error);
       
@@ -5433,6 +5768,161 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       );
     } catch (error) {
       console.error('[coach_decline] Error notifying user:', error);
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка ответов на напоминания
+  
+  // Тренер подтвердил, что связался с клиентом
+  if (data && data.startsWith('request_coach_yes_')) {
+    const requestKey = data.replace('request_coach_yes_', '');
+    
+    // Удаляем заявку из Firestore
+    await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).delete();
+    
+    await getBot().sendMessage(chatId, 
+      '✅ Отлично! Желаем успешной тренировки!',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🏠 На главную', callback_data: 'action_home' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+  
+  // Тренер не смог связаться с клиентом
+  if (data && data.startsWith('request_coach_no_')) {
+    const requestKey = data.replace('request_coach_no_', '');
+    
+    // Получаем данные заявки из Firestore
+    const requestDoc = await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).get();
+    
+    if (requestDoc.exists) {
+      const requestInfo = requestDoc.data() as CoachRequest;
+      
+      // Уведомляем клиента
+      try {
+        await getBot().sendMessage(requestInfo.userId, 
+          `К сожалению, <b>${requestInfo.coachName}</b> не сможет провести тренировку.\n\n` +
+          'Попробуйте связаться с другими тренерами.',
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '👤 Смотреть других тренеров', callback_data: 'find_coach_start' }],
+                [{ text: '🏠 На главную', callback_data: 'action_home' }]
+              ]
+            }
+          }
+        );
+      } catch (error) {
+        console.error('[request_coach_no] Error notifying user:', error);
+      }
+      
+      // Удаляем заявку из Firestore
+      await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).delete();
+    }
+    
+    await getBot().sendMessage(chatId, 
+      '✅ Заявка отклонена. Игрок будет уведомлен.',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🏠 На главную', callback_data: 'action_home' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+  
+  // Клиент подтвердил, что тренер связался
+  if (data && data.startsWith('request_client_yes_')) {
+    const requestKey = data.replace('request_client_yes_', '');
+    
+    // Удаляем заявку из Firestore
+    await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).delete();
+    
+    await getBot().sendMessage(chatId, 
+      '✅ Отлично! Желаем успешной тренировки!',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🏠 На главную', callback_data: 'action_home' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+  
+  // Клиент сказал, что тренер не связался
+  if (data && data.startsWith('request_client_no_')) {
+    const requestKey = data.replace('request_client_no_', '');
+    
+    // Получаем данные заявки из Firestore
+    const requestDoc = await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).get();
+    
+    if (requestDoc.exists) {
+      const requestInfo = requestDoc.data() as CoachRequest;
+      
+      // Уведомляем тренера
+      try {
+        await getBot().sendMessage(requestInfo.coachUserId, 
+          `⚠️ <b>Напоминание</b>\n\n` +
+          `Клиент <b>${requestInfo.userName}</b> ждет вашего ответа. Пожалуйста, свяжитесь с ним.`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '💬 Написать клиенту', url: `tg://user?id=${requestInfo.userId}` }],
+                [{ text: '🏠 На главную', callback_data: 'action_home' }]
+              ]
+            }
+          }
+        );
+      } catch (error) {
+        console.error('[request_client_no] Error notifying coach:', error);
+      }
+      
+      // Формируем URL для контакта с предзаполненным текстом
+      const predefinedText = 'Добрый день, я из бота Play Today, хочу с вами потренироваться.';
+      let contactUrl = '';
+      if (requestInfo.coachContact.startsWith('@')) {
+        const username = requestInfo.coachContact.substring(1);
+        contactUrl = `https://t.me/${username}?text=${encodeURIComponent(predefinedText)}`;
+      } else if (requestInfo.coachContact.startsWith('+')) {
+        contactUrl = `https://t.me/${requestInfo.coachContact.replace(/\D/g, '')}?text=${encodeURIComponent(predefinedText)}`;
+      } else {
+        contactUrl = `https://t.me/${requestInfo.coachContact}?text=${encodeURIComponent(predefinedText)}`;
+      }
+      
+      // Отправляем клиенту сообщение с контактом
+      await getBot().sendMessage(chatId, 
+        `Мы напомнили тренеру <b>${requestInfo.coachName}</b>, что нужно с вами связаться.\n\n` +
+        'Если хотите, можете написать ему самостоятельно:',
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💬 Написать тренеру', url: contactUrl }],
+              [{ text: '👤 Смотреть других тренеров', callback_data: 'find_coach_start' }]
+            ]
+          }
+        }
+      );
     }
     
     await safeAnswerCallbackQuery(query.id);

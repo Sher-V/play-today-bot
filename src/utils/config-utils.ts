@@ -2,6 +2,27 @@ import { COURT_PRICING, WorkingHours } from '../constants/pricing-config';
 import { getMoscowHour, isWeekend } from './date-utils';
 
 /**
+ * Определяет, находится ли приложение в режиме разработки
+ */
+export const isDev = process.env.NODE_ENV === 'development';
+
+/**
+ * Получает токен бота в зависимости от окружения
+ * @returns Bot token или null если не найден
+ */
+export function getBotToken(): string | null {
+  const token = isDev ? process.env.BOT_TOKEN_DEV : process.env.BOT_TOKEN;
+  const tokenName = isDev ? 'BOT_TOKEN_DEV' : 'BOT_TOKEN';
+  
+  if (!token) {
+    console.error(`[getBotToken] ${tokenName} not found in environment variables`);
+    return null;
+  }
+  
+  return token;
+}
+
+/**
  * Получает часы работы корта
  * @param siteId ID площадки
  * @returns Часы работы корта или null, если конфигурация не найдена или не указана
