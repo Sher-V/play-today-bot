@@ -134,12 +134,13 @@ jobs:
           # Получаем service account для Cloud Tasks
           PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format='value(projectNumber)')
           SERVICE_ACCOUNT="${PROJECT_NUMBER}@cloudtasks-service.iam.gserviceaccount.com"
-          echo "Granting Cloud Functions Invoker role to ${SERVICE_ACCOUNT}..."
-          gcloud functions add-iam-policy-binding uploadCoachMedia \
-            --gen2 \
+          echo "Granting Cloud Run Invoker role to ${SERVICE_ACCOUNT} for uploadCoachMedia..."
+          # Для gen2 функций используем Cloud Run команды
+          gcloud run services add-iam-policy-binding uploadCoachMedia \
             --region=${{ env.REGION }} \
             --member="serviceAccount:${SERVICE_ACCOUNT}" \
-            --role="roles/cloudfunctions.invoker" \
+            --role="roles/run.invoker" \
+            --platform=managed \
             --quiet || echo "⚠️ Warning: Could not grant permissions (may already be set)"
 
       - name: Deploy Send Coach Reminder Function
