@@ -3,7 +3,7 @@
 
 export { telegramWebhook, playTodayBot } from './index';
 export { slotsFetcher, fetchSlots } from './functions/slots-fetcher/slots-fetcher';
-export { uploadCoachVideo } from './functions/upload-coach-video';
+export { uploadCoachMedia } from './functions/upload-coach-media';
 
 // Для sendCoachReminder используется functions-framework напрямую в файле
 import './functions/send-coach-reminder';

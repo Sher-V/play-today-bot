@@ -29,6 +29,7 @@ import {
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
 import { getCourtPrice, getBotToken, isDev } from './utils/config-utils';
+import { getRemoteConfigValue } from './utils/remote-config';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -86,26 +87,30 @@ const storage = new Storage();
 /**
  * Создает задачу для загрузки видео в GCS в фоне (через Cloud Tasks или HTTP запрос)
  */
-async function createVideoUploadTask(fileId: string, userId: number): Promise<boolean> {
+/**
+ * Создает задачу для фоновой загрузки медиа (фото или видео) в GCS
+ */
+async function createMediaUploadTask(fileId: string, userId: number, fileType: 'photo' | 'video'): Promise<boolean> {
   try {
     const BOT_TOKEN = getBotToken();
 
     if (!BOT_TOKEN) {
-      console.error('[createVideoUploadTask] Bot token not found');
+      console.error('[createMediaUploadTask] Bot token not found');
       return false;
     }
 
     const payload = {
       fileId,
       userId,
-      botToken: BOT_TOKEN
+      botToken: BOT_TOKEN,
+      fileType
     };
 
     // В dev-режиме делаем прямой HTTP запрос к локальной функции
     if (isDev) {
-      const localFunctionUrl = process.env.VIDEO_UPLOAD_FUNCTION_URL || 'http://localhost:8081';
+      const localFunctionUrl = process.env.MEDIA_UPLOAD_FUNCTION_URL || process.env.VIDEO_UPLOAD_FUNCTION_URL || 'http://localhost:8081';
       
-      console.log(`[createVideoUploadTask] Dev mode: sending HTTP request to ${localFunctionUrl}`);
+      console.log(`[createMediaUploadTask] Dev mode: sending HTTP request to ${localFunctionUrl} for ${fileType}`);
       
       // Делаем запрос в фоне, не ждем ответа
       fetch(localFunctionUrl, {
@@ -117,13 +122,13 @@ async function createVideoUploadTask(fileId: string, userId: number): Promise<bo
       })
         .then(response => {
           if (response.ok) {
-            console.log(`[createVideoUploadTask] Local function accepted the request`);
+            console.log(`[createMediaUploadTask] Local function accepted the request for ${fileType}`);
           } else {
-            console.error(`[createVideoUploadTask] Local function error: ${response.status}`);
+            console.error(`[createMediaUploadTask] Local function error: ${response.status}`);
           }
         })
         .catch(error => {
-          console.error('[createVideoUploadTask] Failed to call local function:', error.message);
+          console.error('[createMediaUploadTask] Failed to call local function:', error.message);
         });
       
       return true;
@@ -135,11 +140,11 @@ async function createVideoUploadTask(fileId: string, userId: number): Promise<bo
 
     const projectId = process.env.GCP_PROJECT || process.env.GCLOUD_PROJECT;
     const location = process.env.CLOUD_TASKS_LOCATION || 'europe-west1';
-    const queue = process.env.CLOUD_TASKS_QUEUE || 'video-upload-queue';
-    const functionUrl = process.env.VIDEO_UPLOAD_FUNCTION_URL;
+    const queue = process.env.CLOUD_TASKS_QUEUE || 'media-upload-queue';
+    const functionUrl = process.env.MEDIA_UPLOAD_FUNCTION_URL || process.env.VIDEO_UPLOAD_FUNCTION_URL;
 
     if (!projectId || !functionUrl) {
-      console.error('[createVideoUploadTask] Missing configuration: projectId or functionUrl');
+      console.error('[createMediaUploadTask] Missing configuration: projectId or functionUrl');
       return false;
     }
 
@@ -156,15 +161,22 @@ async function createVideoUploadTask(fileId: string, userId: number): Promise<bo
       },
     };
 
-    console.log(`[createVideoUploadTask] Creating Cloud Task for user ${userId}, fileId: ${fileId}`);
+    console.log(`[createMediaUploadTask] Creating Cloud Task for user ${userId}, fileId: ${fileId}, type: ${fileType}`);
     const [response] = await client.createTask({ parent, task });
-    console.log(`[createVideoUploadTask] Task created: ${response.name}`);
+    console.log(`[createMediaUploadTask] Task created: ${response.name}`);
     
     return true;
   } catch (error) {
-    console.error('[createVideoUploadTask] Error creating task:', error);
+    console.error('[createMediaUploadTask] Error creating task:', error);
     return false;
   }
+}
+
+/**
+ * @deprecated Используйте createMediaUploadTask вместо этого
+ */
+async function createVideoUploadTask(fileId: string, userId: number): Promise<boolean> {
+  return createMediaUploadTask(fileId, userId, 'video');
 }
 
 /**
@@ -200,75 +212,21 @@ async function uploadMediaToStorage(fileId: string, userId: number, fileType: 'p
 
     const uploadedAt = new Date().toISOString();
 
-    // Для видео сохраняем file_id и запускаем фоновую загрузку в GCS
-    if (fileType === 'video') {
-      console.log(`[uploadMediaToStorage] Video detected, saving file_id and starting background upload to GCS`);
-      
-      // Создаем задачу для фоновой загрузки в GCS (локально через HTTP или через Cloud Tasks)
-      const taskCreated = await createVideoUploadTask(fileId, userId);
-      
-      if (!taskCreated) {
-        console.error('[uploadMediaToStorage] Failed to create upload task');
-        return null;
-      }
-      
-      // Возвращаем объект с file_id, publicUrl будет добавлен позже функцией uploadCoachVideo
-      return {
-        type: 'video',
-        fileId,
-        uploadedAt
-      };
-    }
-
-    // Для фото загружаем в GCS синхронно
-    const BOT_TOKEN = getBotToken();
-    if (!BOT_TOKEN) {
-      console.error('[uploadMediaToStorage] Bot token not found');
+    // Для всех типов медиа сохраняем file_id и запускаем фоновую загрузку в GCS
+    console.log(`[uploadMediaToStorage] ${fileType === 'video' ? 'Video' : 'Photo'} detected, saving file_id and starting background upload to GCS`);
+    
+    // Создаем задачу для фоновой загрузки в GCS (локально через HTTP или через Cloud Tasks)
+    const taskCreated = await createMediaUploadTask(fileId, userId, fileType);
+    
+    if (!taskCreated) {
+      console.error('[uploadMediaToStorage] Failed to create upload task');
       return null;
     }
     
-    const extension = filePath.split('.').pop()?.toLowerCase() || 'jpg';
-    const timestamp = Date.now();
-    const destinationPath = `coaches/${userId}/${timestamp}.${extension}`;
-    const contentType = extension === 'png' ? 'image/png' : 'image/jpeg';
-    
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
-    console.log(`[uploadMediaToStorage] Downloading photo...`);
-    
-    const response = await fetch(fileUrl);
-    if (!response.ok) {
-      console.error('Failed to download file from Telegram', response.status, response.statusText);
-      return null;
-    }
-    
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    console.log(`[uploadMediaToStorage] Photo downloaded, ${buffer.length} bytes`);
-    
-    // Загружаем в Cloud Storage
-    const bucket = storage.bucket(COACH_MEDIA_BUCKET);
-    const file = bucket.file(destinationPath);
-    
-    await file.save(buffer, {
-      metadata: {
-        contentType,
-        metadata: {
-          userId: userId.toString(),
-          uploadedAt,
-          fileType: 'photo',
-          telegramFileId: fileId
-        }
-      }
-    });
-    
-    const publicUrl = `https://storage.googleapis.com/${COACH_MEDIA_BUCKET}/${destinationPath}`;
-    console.log(`[uploadMediaToStorage] Photo upload complete! Public URL: ${publicUrl}`);
-    
-    // Возвращаем объект с file_id и publicUrl
+    // Возвращаем объект с file_id, publicUrl будет добавлен позже функцией uploadCoachMedia
     return {
-      type: 'photo',
+      type: fileType,
       fileId,
-      publicUrl,
       uploadedAt
     };
   } catch (error) {
@@ -411,6 +369,25 @@ const firestore = new Firestore();
 // Коллекция пользователей в Firestore
 const USERS_COLLECTION = 'users';
 const REQUESTS_COLLECTION = 'coachRequests';
+
+/**
+ * Формирует клавиатуру главного меню с учетом feature flags
+ */
+async function getMainMenuKeyboard(): Promise<TelegramBot.KeyboardButton[][]> {
+  const keyboard: TelegramBot.KeyboardButton[][] = [
+    [{ text: '🎾 Найти корт (теннис)' }]
+  ];
+  
+  // Проверяем флаг для кнопки "Найти тренера"
+  const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
+  if (showFindCoach) {
+    keyboard.push([{ text: '👤 Найти тренера' }]);
+  }
+  
+  keyboard.push([{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }]);
+  
+  return keyboard;
+}
 
 /**
  * Получает профиль пользователя из Firestore
@@ -595,6 +572,186 @@ const coachSearchStates = new Map<number, CoachSearchState>();
 // Хранилище для отслеживания текущего шага редактирования профиля
 const coachEditStates = new Map<number, CoachEditStep>();
 
+// Хранилище для накопления файлов из media group
+interface MediaGroupItem {
+  fileId: string;
+  fileType: 'photo' | 'video';
+  timestamp: number;
+}
+
+interface MediaGroupBuffer {
+  items: MediaGroupItem[];
+  timeoutId: NodeJS.Timeout | null;
+  userId: number;
+  chatId: number;
+  context: 'registration' | 'edit';
+}
+
+const mediaGroupBuffers = new Map<string, MediaGroupBuffer>();
+const MEDIA_GROUP_TIMEOUT = 2000; // 2 секунды на сбор всех файлов из группы
+
+/**
+ * Обрабатывает файл из media group или одиночный файл
+ */
+async function processMediaFile(
+  fileId: string,
+  fileType: 'photo' | 'video',
+  userId: number,
+  chatId: number,
+  context: 'registration' | 'edit',
+  mediaGroupId?: string
+): Promise<void> {
+  const profile = await getUserProfile(userId) || {};
+  const mediaArray = profile.coachMedia || [];
+  
+  // Если это media group, накапливаем файлы
+  if (mediaGroupId) {
+    const buffer = mediaGroupBuffers.get(mediaGroupId);
+    
+    if (buffer) {
+      // Добавляем файл в буфер
+      buffer.items.push({ fileId, fileType, timestamp: Date.now() });
+      console.log(`[processMediaFile] Added file to media group ${mediaGroupId}, total: ${buffer.items.length}`);
+      
+      // Сбрасываем таймаут
+      if (buffer.timeoutId) {
+        clearTimeout(buffer.timeoutId);
+      }
+      
+      // Устанавливаем новый таймаут
+      buffer.timeoutId = setTimeout(async () => {
+        await processMediaGroup(mediaGroupId, buffer);
+        mediaGroupBuffers.delete(mediaGroupId);
+      }, MEDIA_GROUP_TIMEOUT);
+      
+      return;
+    } else {
+      // Создаем новый буфер
+      const newBuffer: MediaGroupBuffer = {
+        items: [{ fileId, fileType, timestamp: Date.now() }],
+        timeoutId: null,
+        userId,
+        chatId,
+        context
+      };
+      
+      console.log(`[processMediaFile] Created new media group buffer ${mediaGroupId}`);
+      
+      // Устанавливаем таймаут
+      newBuffer.timeoutId = setTimeout(async () => {
+        await processMediaGroup(mediaGroupId, newBuffer);
+        mediaGroupBuffers.delete(mediaGroupId);
+      }, MEDIA_GROUP_TIMEOUT);
+      
+      mediaGroupBuffers.set(mediaGroupId, newBuffer);
+      return;
+    }
+  }
+  
+  // Одиночный файл - обрабатываем сразу
+  console.log(`[processMediaFile] Processing single ${fileType} file: ${fileId}`);
+  
+  const processingMsg = await getBot().sendMessage(chatId, '⏳ Обрабатываю файл...');
+  
+  const mediaItem = await uploadMediaToStorage(fileId, userId, fileType);
+  
+  try {
+    await getBot().deleteMessage(chatId, processingMsg.message_id);
+  } catch (e) {
+    console.log('Could not delete processing message');
+  }
+  
+  if (mediaItem) {
+    mediaArray.push(mediaItem);
+    profile.coachMedia = mediaArray;
+    await saveUserProfile(userId, profile);
+    
+    const message = fileType === 'video' ? USER_TEXTS.COACH_VIDEO_PROCESSING : USER_TEXTS.COACH_MEDIA_UPLOADED;
+    const keyboard = context === 'registration' 
+      ? {
+          inline_keyboard: [
+            [{ text: '📤 Загрузить еще', callback_data: 'coach_media_upload_more' }],
+            [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
+          ]
+        }
+      : {
+          inline_keyboard: [
+            [{ text: '✔️ Готово', callback_data: 'coach_edit_done' }],
+            [{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]
+          ]
+        };
+    
+    await getBot().sendMessage(chatId, message, { reply_markup: keyboard });
+  } else {
+    await getBot().sendMessage(chatId, '❌ Ошибка при обработке файла. Попробуйте другой файл.', {
+      reply_markup: {
+        inline_keyboard: context === 'registration'
+          ? [[{ text: '✔️ Готово', callback_data: 'coach_media_done' }]]
+          : [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
+      }
+    });
+  }
+}
+
+/**
+ * Обрабатывает все файлы из media group
+ */
+async function processMediaGroup(mediaGroupId: string, buffer: MediaGroupBuffer): Promise<void> {
+  console.log(`[processMediaGroup] Processing media group ${mediaGroupId} with ${buffer.items.length} files`);
+  
+  const { userId, chatId, context } = buffer;
+  const profile = await getUserProfile(userId) || {};
+  const mediaArray = profile.coachMedia || [];
+  
+  const processingMsg = await getBot().sendMessage(chatId, `⏳ Обрабатываю ${buffer.items.length} файл(ов)...`);
+  
+  let successCount = 0;
+  let failCount = 0;
+  
+  // Обрабатываем все файлы последовательно
+  for (const item of buffer.items) {
+    const mediaItem = await uploadMediaToStorage(item.fileId, userId, item.fileType);
+    if (mediaItem) {
+      mediaArray.push(mediaItem);
+      successCount++;
+    } else {
+      failCount++;
+    }
+  }
+  
+  // Сохраняем профиль
+  profile.coachMedia = mediaArray;
+  await saveUserProfile(userId, profile);
+  
+  // Удаляем сообщение о процессе
+  try {
+    await getBot().deleteMessage(chatId, processingMsg.message_id);
+  } catch (e) {
+    console.log('Could not delete processing message');
+  }
+  
+  // Отправляем подтверждение
+  const message = successCount > 0
+    ? `✅ Обработано файлов: ${successCount}${failCount > 0 ? `\n❌ Ошибок: ${failCount}` : ''}`
+    : '❌ Ошибка при обработке файлов. Попробуйте загрузить файлы по одному.';
+  
+  const keyboard = context === 'registration' 
+    ? {
+        inline_keyboard: [
+          [{ text: '📤 Загрузить еще', callback_data: 'coach_media_upload_more' }],
+          [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
+        ]
+      }
+    : {
+        inline_keyboard: [
+          [{ text: '✔️ Готово', callback_data: 'coach_edit_done' }],
+          [{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]
+        ]
+      };
+  
+  await getBot().sendMessage(chatId, message, { reply_markup: keyboard });
+}
+
 /**
  * Создает Cloud Task для отправки напоминания через 1 час
  * В dev режиме использует прямой HTTP вызов или setTimeout
@@ -755,8 +912,8 @@ function formatCoachCard(profile: UserProfile, currentIndex: number, totalCoache
       center: 'Центр',
       east: 'Восток',
       south: 'Юг',
-      suburbs: 'Подмосковье',
-      any: 'любой'
+      'moscow-region': 'Подмосковье',
+      any: 'Не важно'
     };
     const districts = profile.coachDistricts.map(d => locationLabels[d] || d).join(', ');
     text += `📍 <b>Районы:</b> ${districts}\n\n`;
@@ -2061,11 +2218,11 @@ function getFavoriteCourtsKeyboard(selectedCourtIds: string[]): TelegramBot.Inli
 /**
  * Генерация клавиатуры с пагинацией и кнопкой "Выбрать другую дату"
  */
-function getPaginationKeyboard(
+async function getPaginationKeyboard(
   currentPage: number,
   totalPages: number,
   sport: Sport
-): TelegramBot.InlineKeyboardButton[][] {
+): Promise<TelegramBot.InlineKeyboardButton[][]> {
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
   
   // Кнопки пагинации
@@ -2085,8 +2242,11 @@ function getPaginationKeyboard(
     buttons.push(paginationRow);
   }
   
-  // Кнопка "Подобрать тренера"
-  buttons.push([{ text: '👤 Подобрать тренера', callback_data: 'find_coach_start' }]);
+  // Проверяем флаг для кнопки "Подобрать тренера"
+  const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
+  if (showFindCoach) {
+    buttons.push([{ text: '👤 Подобрать тренера', callback_data: 'find_coach_start' }]);
+  }
   
   // Кнопка "Выбрать другую дату"
   buttons.push([{ text: '📅 Выбрать другую дату', callback_data: `select_another_date_${sport}` }]);
@@ -2109,14 +2269,11 @@ async function handleStart(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
   const userName = msg.from?.first_name || 'друг';
   
+  const mainMenuKeyboard = await getMainMenuKeyboard();
   await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
     parse_mode: 'HTML',
     reply_markup: {
-      keyboard: [
-        [{ text: '🎾 Найти корт (теннис)' }],
-        [{ text: '🏓 Найти корт (падел)' }],
-        [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
-      ],
+      keyboard: mainMenuKeyboard,
       resize_keyboard: true
     }
   });
@@ -2136,7 +2293,8 @@ async function handleCoachSearch(
   chatId: number,
   userId: number,
   trainingType: 'individual' | 'group' | 'any',
-  query: TelegramBot.CallbackQuery
+  query: TelegramBot.CallbackQuery,
+  messageId?: number
 ) {
   // Получаем районы пользователя для фильтрации
   const userProfile = await getUserProfile(userId);
@@ -2146,18 +2304,26 @@ async function handleCoachSearch(
   const coaches = await getActiveCoaches(trainingType, userDistricts);
   
   if (coaches.length === 0) {
-    await getBot().sendMessage(chatId, 
-      '😔 К сожалению, сейчас нет доступных тренеров с такими параметрами.\n\n' +
-      'Попробуйте изменить фильтры или вернитесь позже.',
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔄 Попробовать снова', callback_data: 'find_coach_start' }],
-            [{ text: '🏠 На главную', callback_data: 'action_home' }]
-          ]
-        }
-      }
-    );
+    const errorMessage = '😔 К сожалению, сейчас нет доступных тренеров с такими параметрами.\n\n' +
+      'Попробуйте изменить фильтры или вернитесь позже.';
+    const errorKeyboard = {
+      inline_keyboard: [
+        [{ text: '🔄 Попробовать снова', callback_data: 'find_coach_start' }],
+        [{ text: '🏠 На главную', callback_data: 'action_home' }]
+      ]
+    };
+    
+    if (messageId) {
+      await safeEditMessageText(errorMessage, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: errorKeyboard
+      });
+    } else {
+      await getBot().sendMessage(chatId, errorMessage, {
+        reply_markup: errorKeyboard
+      });
+    }
     await safeAnswerCallbackQuery(query.id);
     return;
   }
@@ -2171,7 +2337,7 @@ async function handleCoachSearch(
   coachSearchStates.set(userId, searchState);
   
   // Показываем первую карточку
-  await showCoachCard(chatId, userId, searchState);
+  await showCoachCard(chatId, userId, searchState, messageId);
   await safeAnswerCallbackQuery(query.id);
 }
 
@@ -2429,12 +2595,7 @@ async function handleMessage(msg: TelegramBot.Message) {
       await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_PRICE_SPLIT, {
         parse_mode: 'HTML',
         reply_markup: {
-          keyboard: [
-            [{ text: '🎾 Найти корт (теннис)' }],
-            [{ text: '🏓 Найти корт (падел)' }],
-            [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
-          ],
-          resize_keyboard: true
+          remove_keyboard: true
         }
       });
       // Устанавливаем следующий шаг
@@ -2474,12 +2635,7 @@ async function handleMessage(msg: TelegramBot.Message) {
       await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_PRICE_GROUP, {
         parse_mode: 'HTML',
         reply_markup: {
-          keyboard: [
-            [{ text: '🎾 Найти корт (теннис)' }],
-            [{ text: '🏓 Найти корт (падел)' }],
-            [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
-          ],
-          resize_keyboard: true
+          remove_keyboard: true
         }
       });
       // Устанавливаем следующий шаг
@@ -2691,9 +2847,6 @@ async function handleMessage(msg: TelegramBot.Message) {
     const editStep = coachEditStates.get(userId);
     
     if (editStep === CoachEditStep.MEDIA && (msg.photo || msg.video)) {
-      const profile = await getUserProfile(userId) || {};
-      const mediaArray = profile.coachMedia || [];
-      
       let fileId: string | undefined;
       let fileType: 'photo' | 'video' | undefined;
       
@@ -2706,30 +2859,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
       
       if (fileId && fileType) {
-        const processingMsg = await getBot().sendMessage(chatId, '⏳ Обрабатываю файл...');
-        
-        const mediaItem = await uploadMediaToStorage(fileId, userId, fileType);
-        
-        try {
-          await getBot().deleteMessage(chatId, processingMsg.message_id);
-        } catch (e) {
-          console.log('Could not delete processing message');
-        }
-        
-        if (mediaItem) {
-          mediaArray.push(mediaItem);
-          profile.coachMedia = mediaArray;
-          await saveUserProfile(userId, profile);
-          
-          await getBot().sendMessage(chatId, '✅ Медиа добавлено!', {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '✔️ Готово', callback_data: 'coach_edit_done' }],
-                [{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]
-              ]
-            }
-          });
-        }
+        const mediaGroupId = msg.media_group_id;
+        await processMediaFile(fileId, fileType, userId, chatId, 'edit', mediaGroupId);
       }
       return;
     }
@@ -2740,9 +2871,6 @@ async function handleMessage(msg: TelegramBot.Message) {
     const currentStep = coachRegistrationStates.get(userId);
     
     if (currentStep === CoachRegistrationStep.MEDIA && (msg.photo || msg.video)) {
-      const profile = await getUserProfile(userId) || {};
-      const mediaArray = profile.coachMedia || [];
-      
       // Получаем file_id и тип файла
       let fileId: string | undefined;
       let fileType: 'photo' | 'video' | undefined;
@@ -2758,48 +2886,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       if (fileId && fileType) {
         console.log(`[handleMessage] Processing ${fileType} with fileId: ${fileId}`);
-        
-        // Отправляем сообщение о процессе
-        const processingMsg = await getBot().sendMessage(chatId, '⏳ Обрабатываю файл...');
-        
-        // Загружаем файл (для фото - синхронно в GCS, для видео - сохраняем file_id и запускаем фоновую загрузку)
-        const mediaItem = await uploadMediaToStorage(fileId, userId, fileType);
-        
-        // Удаляем сообщение о процессе
-        try {
-          await getBot().deleteMessage(chatId, processingMsg.message_id);
-        } catch (e) {
-          console.log('Could not delete processing message');
-        }
-        
-        if (mediaItem) {
-          console.log(`[handleMessage] Successfully processed media: fileId=${mediaItem.fileId}, type=${mediaItem.type}, hasPublicUrl=${!!mediaItem.publicUrl}`);
-          
-          // Добавляем медиа-объект в профиль
-          mediaArray.push(mediaItem);
-          profile.coachMedia = mediaArray;
-          await saveUserProfile(userId, profile);
-          
-          // Отправляем подтверждение с кнопками
-          const message = fileType === 'video' ? USER_TEXTS.COACH_VIDEO_PROCESSING : USER_TEXTS.COACH_MEDIA_UPLOADED;
-          await getBot().sendMessage(chatId, message, {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '📤 Загрузить еще', callback_data: 'coach_media_upload_more' }],
-                [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
-              ]
-            }
-          });
-        } else {
-          console.error(`[handleMessage] Failed to process media`);
-          await getBot().sendMessage(chatId, '❌ Ошибка при обработке файла. Попробуйте другой файл или нажмите "Готово"', {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '✔️ Готово', callback_data: 'coach_media_done' }]
-              ]
-            }
-          });
-        }
+        const mediaGroupId = msg.media_group_id;
+        await processMediaFile(fileId, fileType, userId, chatId, 'registration', mediaGroupId);
       }
       return;
     }
@@ -2807,6 +2895,11 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   switch (text) {
     case '🎾 Найти корт (теннис)':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+      }
+      
       // Отслеживаем клик на текстовую кнопку
       if (userId) {
         trackButtonClick({
@@ -2838,6 +2931,11 @@ async function handleMessage(msg: TelegramBot.Message) {
       });
       break;
     case '🏓 Найти корт (падел)':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+      }
+      
       // Отслеживаем клик на текстовую кнопку
       if (userId) {
         trackButtonClick({
@@ -3026,6 +3124,11 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
       break;
     case '⚙️ Еще':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+      }
+      
       // Отслеживаем клик на текстовую кнопку
       if (userId) {
         trackButtonClick({
@@ -3046,35 +3149,49 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      // Показываем подменю "Еще"
+      // Получаем профиль для определения статуса тренера
+      const userProfileForMenu = userId ? await getUserProfile(userId) : null;
+      const isCoachForMenu = userProfileForMenu?.isCoach || false;
+      const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
+      const moreMenuCoachButtonData = isCoachForMenu ? 'coach_view_profile' : 'profile_toggle_coach';
+      
+      // Показываем подменю "Еще" с inline-кнопками
       await getBot().sendMessage(chatId, 'Выберите действие:', {
         reply_markup: {
-          keyboard: [
-            [{ text: '🏓 Найти корт (падел)' }],
-            [{ text: '⭐ Избранные корты' }],
-            [{ text: '◀️ Назад' }],
-          ],
-          resize_keyboard: true
+          inline_keyboard: [
+            [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
+            [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
+            [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
+            [{ text: '◀️ Назад', callback_data: 'action_home' }],
+          ]
         }
       });
       break;
     case '◀️ Назад':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+      }
+      
       // Возвращаемся на главное меню
       const profile = userId ? await getUserProfile(userId) : null;
       const userName = profile?.name || msg.from?.first_name || 'друг';
       
+      const mainMenuKeyboard = await getMainMenuKeyboard();
       await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
         parse_mode: 'HTML',
         reply_markup: {
-          keyboard: [
-            [{ text: '🎾 Найти корт (теннис)' }],
-            [{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }],
-          ],
+          keyboard: mainMenuKeyboard,
           resize_keyboard: true
         }
       });
       break;
     case '💬 Чат участников':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+      }
+      
       // Отслеживаем клик на текстовую кнопку
       if (userId) {
         trackButtonClick({
@@ -3096,6 +3213,48 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
       
       await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
+      break;
+    case '👤 Найти тренера':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+      }
+      
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'find_coach',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      // Показываем вопрос о типе тренировки
+      await getBot().sendMessage(chatId, 
+        'Ответьте на один вопрос — и я покажу подходящих тренеров.\n\n' +
+        '<b>Как хотите тренироваться?</b>',
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🎾 1 на 1 (тренер + я)', callback_data: 'find_coach_type_individual' }],
+              [{ text: '👥 Будем вдвоём / втроём (приведу друзей)', callback_data: 'find_coach_type_group' }],
+              [{ text: '⏭ Не важно', callback_data: 'find_coach_type_any' }]
+            ]
+          }
+        }
+      );
       break;
     case '👤 Профиль':
       // Отслеживаем клик на текстовую кнопку
@@ -3276,7 +3435,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           east: 'Восток',
           south: 'Юг',
           'moscow-region': 'Подмосковье',
-          any: 'Любой район'
+          any: 'Не важно'
         };
         
         const timeLabels: Record<string, string> = {
@@ -3434,7 +3593,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
               parse_mode: 'Markdown',
               disable_web_page_preview: true,
               reply_markup: {
-                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                inline_keyboard: await getPaginationKeyboard(1, totalPages, searchState.sport)
               }
             });
           } else {
@@ -3442,7 +3601,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
               parse_mode: 'Markdown',
               disable_web_page_preview: true,
               reply_markup: {
-                inline_keyboard: getPaginationKeyboard(1, totalPages, searchState.sport)
+                inline_keyboard: await getPaginationKeyboard(1, totalPages, searchState.sport)
               }
             });
           }
@@ -4286,7 +4445,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
         reply_markup: {
-          inline_keyboard: getPaginationKeyboard(page, searchState.totalPages || 1, searchState.sport)
+          inline_keyboard: await getPaginationKeyboard(page, searchState.totalPages || 1, searchState.sport)
         }
       });
     }
@@ -4331,7 +4490,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
         reply_markup: {
-          inline_keyboard: getPaginationKeyboard(currentPage, totalPages, searchState.sport)
+          inline_keyboard: await getPaginationKeyboard(currentPage, totalPages, searchState.sport)
         }
       });
     } else {
@@ -4339,7 +4498,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
         reply_markup: {
-          inline_keyboard: getPaginationKeyboard(currentPage, totalPages, searchState.sport)
+          inline_keyboard: await getPaginationKeyboard(currentPage, totalPages, searchState.sport)
         }
       });
     }
@@ -4383,8 +4542,76 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Обработка кнопки "Найти корт (падел)" из меню "Еще"
+  if (data === 'find_padel_court') {
+    // Сбрасываем состояние заполнения анкеты тренера
+    coachRegistrationStates.delete(userId);
+    
+    await safeEditMessageText(
+      USER_TEXTS.DATE_SELECTION,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📆 Сегодня', callback_data: `date_today_${SportType.PADEL}` }],
+            [{ text: '📆 Завтра', callback_data: `date_tomorrow_${SportType.PADEL}` }],
+            [{ text: '🗓 Указать дату', callback_data: `date_custom_${SportType.PADEL}` }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка кнопки "Профиль" из меню "Еще"
+  if (data === 'profile_show') {
+    // Сбрасываем состояние заполнения анкеты тренера
+    coachRegistrationStates.delete(userId);
+    
+    // Получаем профиль пользователя
+    const profileData = await getUserProfile(userId) || {};
+    const profileName = profileData?.name || query.from.first_name || 'друг';
+    const favoriteCourtsCount = profileData?.favorites?.length || 0;
+    const isCoach = profileData?.isCoach || false;
+    
+    // Формируем сообщение профиля
+    let profileMessage = `👤 *Профиль*\n\n`;
+    profileMessage += `Имя: ${profileName}\n`;
+    profileMessage += `Избранных кортов: ${favoriteCourtsCount}\n`;
+    profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
+    profileMessage += `Что хочешь сделать?`;
+    
+    const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
+    const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
+    
+    await safeEditMessageText(
+      profileMessage,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
+            [{ text: coachButtonText, callback_data: coachButtonData }],
+            [{ text: '◀️ Назад', callback_data: 'action_home' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
   // Обработка кнопки "Избранные корты" из профиля
   if (data === 'profile_favorites') {
+    // Сбрасываем состояние заполнения анкеты тренера
+    coachRegistrationStates.delete(userId);
+    
     // Проверяем, есть ли у пользователя избранные корты
     const userProfile = await getUserProfile(userId) || {};
     const favoriteCourts = userProfile.favorites || [];
@@ -4531,21 +4758,24 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Обработка кнопки "Я тренер"
   if (data === 'profile_toggle_coach') {
-    const coachMessage = `🎾 *Для тренеров*\n\n` +
-      `Зарегистрируйтесь в Play Today — сейчас это бесплатно.\n\n` +
-      `Мы будем показывать ваш профиль пользователям, которые ищут тренера в подходящих вам районах.\n\n` +
-      `Вы сможете принимать заявки на тренировки: индивидуальные / сплит / групповые.\n\n` +
-      `Чтобы начать, нам нужна базовая информация — займёт примерно 2 минуты.`;
+    // Сбрасываем состояние заполнения анкеты тренера (если было начато ранее)
+    coachRegistrationStates.delete(userId);
+    
+    const coachMessage = `<b>Зарегистрируйтесь в Play Today — сейчас это бесплатно.</b>\n\n` +
+      `Мы показываем профили тренеров игрокам, которые ищут занятия в <b>ваших районах</b> — так вы получаете <b>новые заявки</b> на тренировки.\n\n` +
+      `Вы сможете принимать запросы на: <b>индивидуальные / сплит / групповые занятия.</b>\n\n` +
+      `✅ Заполните короткую анкету (≈2 минуты), и мы добавим вас в каталог тренеров.\n\n` +
+      `Нажмите "Заполнить анкету", чтобы начать регистрацию.`;
     
     await safeEditMessageText(
       coachMessage,
       {
         chat_id: chatId,
         message_id: query.message?.message_id,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '✅ Зарегистрироваться', callback_data: 'coach_register' }],
+            [{ text: '✅ Заполнить анкету', callback_data: 'coach_register' }],
             [{ text: '⬅️ Назад', callback_data: 'profile_back' }]
           ]
         }
@@ -4591,14 +4821,11 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   // Обработка регистрации тренера
   if (data === 'coach_register') {
     // Спрашиваем имя тренера
+    const mainMenuKeyboard3 = await getMainMenuKeyboard();
     await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_NAME, {
       parse_mode: 'HTML',
       reply_markup: {
-        keyboard: [
-          [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
-        ],
+        keyboard: mainMenuKeyboard3,
         resize_keyboard: true
       }
     });
@@ -4656,16 +4883,28 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     
+    // Проверяем, находимся ли мы в режиме редактирования
+    const editStep = coachEditStates.get(userId);
+    if (editStep === CoachEditStep.DISTRICTS) {
+      // Завершаем редактирование районов
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, '✅ Районы обновлены', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+      
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    
+    // Если не в режиме редактирования, продолжаем регистрацию
     // Шаг 3: Спрашиваем цену индивидуальной тренировки
     await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_PRICE_INDIVIDUAL, {
       parse_mode: 'HTML',
       reply_markup: {
-        keyboard: [
-          [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
-        ],
-        resize_keyboard: true
+        remove_keyboard: true
       }
     });
     // Устанавливаем шаг - ждем цену индивидуальной тренировки
@@ -4738,18 +4977,30 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     
+    // Проверяем, находимся ли мы в режиме редактирования
+    const editStep = coachEditStates.get(userId);
+    if (editStep === CoachEditStep.DAYS) {
+      // Завершаем редактирование дней
+      coachEditStates.delete(userId);
+      
+      await getBot().sendMessage(chatId, '✅ Дни недели обновлены', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '« Назад к профилю', callback_data: 'coach_view_profile' }]]
+        }
+      });
+      
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    
+    // Если не в режиме редактирования, продолжаем регистрацию
     console.log('Proceeding to about step');
     
     // Шаг 7: Спрашиваем информацию о тренере
     await getBot().sendMessage(chatId, USER_TEXTS.COACH_ASK_ABOUT, {
       parse_mode: 'HTML',
       reply_markup: {
-        keyboard: [
-          [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }],
-        ],
-        resize_keyboard: true
+        remove_keyboard: true
       }
     });
     // Устанавливаем шаг - ждем информацию о тренере
@@ -4814,6 +5065,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Просмотр профиля тренера
   if (data === 'coach_view_profile') {
+    // Сбрасываем состояние заполнения анкеты тренера
+    coachRegistrationStates.delete(userId);
+    
     const profile = await getUserProfile(userId);
     
     if (!profile || !profile.isCoach) {
@@ -4835,8 +5089,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         center: 'Центр',
         east: 'Восток',
         south: 'Юг',
-        suburbs: 'Подмосковье',
-        any: 'любой'
+        'moscow-region': 'Подмосковье',
+        any: 'Не важно'
       };
       const districts = profile.coachDistricts.map(d => locationLabels[d] || d).join(', ');
       profileText += `📍 <b>Районы:</b> ${districts}\n\n`;
@@ -4869,7 +5123,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     profileText += `\n`;
     
     if (profile.coachContact) {
-      profileText += `📱 <b>Контакт:</b> ${profile.coachContact}\n\n`;
+      profileText += `📱 <b>Контакт:</b> ${profile.coachContact}`;
     }
     
     // Определяем текст кнопки видимости в зависимости от статуса профиля
@@ -4877,21 +5131,33 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const visibilityButtonText = isHidden ? '✅ Включить показы' : '💤 Поставить на паузу';
     const visibilityStatus = isHidden ? '🔴 <b>Профиль на паузе</b>' : '🟢 <b>Профиль активен</b>';
     
+    // Формируем клавиатуру с кнопками
+    const keyboardButtons: TelegramBot.InlineKeyboardButton[][] = [
+      [{ text: '✏️ Редактировать', callback_data: 'coach_edit_profile' }],
+      [{ text: visibilityButtonText, callback_data: 'coach_hide_profile' }]
+    ];
+    
+    // Добавляем кнопку "Показать другие фото/видео" если медиа больше 1
+    if (profile.coachMedia && profile.coachMedia.length > 1) {
+      keyboardButtons.push([{ text: '📸 Показать другие фото/видео', callback_data: `coach_show_media_${userId}` }]);
+    }
+    
+    keyboardButtons.push([{ text: '« Назад', callback_data: 'action_home' }]);
+    
     const keyboard = {
-      inline_keyboard: [
-        [{ text: '✏️ Редактировать', callback_data: 'coach_edit_profile' }],
-        [{ text: visibilityButtonText, callback_data: 'coach_hide_profile' }],
-        [{ text: '« Назад', callback_data: 'action_home' }]
-      ]
+      inline_keyboard: keyboardButtons
     };
     
-    // Если есть медиа-файлы, отправляем их с caption (текстом профиля)
+    // Если есть медиа-файлы, отправляем только первое с текстом профиля
     if (profile.coachMedia && profile.coachMedia.length > 0) {
-      console.log(`[coach_view_profile] Sending ${profile.coachMedia.length} media files as group with caption`);
+      const firstMedia = profile.coachMedia[0];
+      
+      // Добавляем статус видимости к тексту профиля
+      let fullProfileText = profileText + `\n\n${visibilityStatus}`;
       
       // Проверяем длину текста (Telegram ограничивает caption до 1024 символов)
       const maxCaptionLength = 1024;
-      let caption = profileText;
+      let caption = fullProfileText;
       
       if (caption.length > maxCaptionLength) {
         console.log(`[coach_view_profile] Caption too long (${caption.length}), truncating`);
@@ -4899,93 +5165,43 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
       
       try {
-        // Telegram поддерживает media group до 10 файлов
-        if (profile.coachMedia.length <= 10) {
-          const mediaGroup = profile.coachMedia.map((media, index) => {
-            const baseMedia = {
-              type: media.type as 'photo' | 'video',
-              media: media.fileId
-            };
-            
-            // Добавляем caption только к первому элементу
-            if (index === 0) {
-              return {
-                ...baseMedia,
-                caption,
-                parse_mode: 'HTML' as const
-              };
-            }
-            
-            return baseMedia;
+        // Отправляем первое медиа с текстом профиля и кнопками
+        if (firstMedia.type === 'photo') {
+          await getBot().sendPhoto(chatId, firstMedia.fileId, {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: keyboard
           });
-          
-          await getBot().sendMediaGroup(chatId, mediaGroup);
-        } else {
-          // Если больше 10, отправляем первую группу с caption, остальные без
-          console.log(`[coach_view_profile] Too many media files (${profile.coachMedia.length}), sending in batches`);
-          
-          for (let i = 0; i < profile.coachMedia.length; i += 10) {
-            const batch = profile.coachMedia.slice(i, i + 10);
-            const mediaGroup = batch.map((media, index) => {
-              const baseMedia = {
-                type: media.type as 'photo' | 'video',
-                media: media.fileId
-              };
-              
-              // Caption только к первому элементу первой группы
-              if (i === 0 && index === 0) {
-                return {
-                  ...baseMedia,
-                  caption,
-                  parse_mode: 'HTML' as const
-                };
-              }
-              
-              return baseMedia;
-            });
-            
-            await getBot().sendMediaGroup(chatId, mediaGroup);
-          }
+        } else if (firstMedia.type === 'video') {
+          await getBot().sendVideo(chatId, firstMedia.fileId, {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: keyboard
+          });
         }
         
         // Если текст был обрезан, отправляем полный текст отдельно
-        if (profileText.length > maxCaptionLength) {
-          await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${profileText}`, {
+        if (fullProfileText.length > maxCaptionLength) {
+          await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
             parse_mode: 'HTML'
           });
         }
       } catch (error) {
-        console.error(`[coach_view_profile] Error sending media group:`, error);
-        // Fallback: отправляем текст отдельно, затем медиа по одному
-        await getBot().sendMessage(chatId, profileText, {
-          parse_mode: 'HTML'
+        console.error(`[coach_view_profile] Error sending media:`, error);
+        // Fallback: отправляем текст отдельно
+        await getBot().sendMessage(chatId, fullProfileText, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
         });
-        
-        for (const media of profile.coachMedia) {
-          try {
-            if (media.type === 'photo') {
-              await getBot().sendPhoto(chatId, media.fileId);
-            } else if (media.type === 'video') {
-              await getBot().sendVideo(chatId, media.fileId);
-            }
-          } catch (e) {
-            console.error(`[coach_view_profile] Error sending individual media:`, e);
-          }
-        }
       }
     } else {
-      // Если медиа нет, отправляем просто текст
-      await getBot().sendMessage(chatId, profileText, {
-        parse_mode: 'HTML'
+      // Если медиа нет, отправляем просто текст с кнопками
+      const fullProfileText = profileText + `\n\n${visibilityStatus}`;
+      await getBot().sendMessage(chatId, fullProfileText, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
       });
     }
-    
-    // Отправляем сообщение с кнопками управления
-    await getBot().sendMessage(chatId, 
-      `${visibilityStatus}`, {
-      parse_mode: 'HTML',
-      reply_markup: keyboard
-    });
     
     await safeAnswerCallbackQuery(query.id);
     return;
@@ -5364,19 +5580,22 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Подбор тренера - индивидуальная тренировка
   if (data === 'find_coach_type_individual') {
-    await handleCoachSearch(chatId, userId, 'individual', query);
+    const messageId = query.message?.message_id;
+    await handleCoachSearch(chatId, userId, 'individual', query, messageId);
     return;
   }
 
   // Подбор тренера - групповая тренировка
   if (data === 'find_coach_type_group') {
-    await handleCoachSearch(chatId, userId, 'group', query);
+    const messageId = query.message?.message_id;
+    await handleCoachSearch(chatId, userId, 'group', query, messageId);
     return;
   }
 
   // Подбор тренера - любой тип
   if (data === 'find_coach_type_any') {
-    await handleCoachSearch(chatId, userId, 'any', query);
+    const messageId = query.message?.message_id;
+    await handleCoachSearch(chatId, userId, 'any', query, messageId);
     return;
   }
 
@@ -5623,8 +5842,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           center: 'Центр',
           east: 'Восток',
           south: 'Юг',
-          suburbs: 'Подмосковье',
-          any: 'любой'
+          'moscow-region': 'Подмосковье',
+          any: 'Не важно'
         };
         const districts = userDistricts.map(d => locationLabels[d] || d).join(', ');
         coachMessage += `📍 <b>Районы:</b> ${districts}\n`;
@@ -5636,6 +5855,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         coachMessage += `\n🗓 Игрок искал корт на <b>${date}</b> (${time})\n`;
         coachMessage += `📍 в районе: ${location}\n`;
       }
+      
+      // Добавляем напоминание об ответе
+      coachMessage += `\n⏰ Пожалуйста, ответьте на заявку в течение часа.`;
       
       // Отправляем уведомление тренеру
       await getBot().sendMessage(parseInt(coachUserId), coachMessage, {
@@ -5694,10 +5916,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         coachContact,
         timestamp: Date.now(),
         reminderSent: false,
-        // Сохраняем информацию о последнем поиске корта
-        courtSearchDate: userProfile?.lastCourtSearch?.date,
-        courtSearchTime: userProfile?.lastCourtSearch?.time,
-        courtSearchLocation: userProfile?.lastCourtSearch?.location
+        // Сохраняем информацию о последнем поиске корта (только если есть)
+        ...(userProfile?.lastCourtSearch?.date && { courtSearchDate: userProfile.lastCourtSearch.date }),
+        ...(userProfile?.lastCourtSearch?.time && { courtSearchTime: userProfile.lastCourtSearch.time }),
+        ...(userProfile?.lastCourtSearch?.location && { courtSearchLocation: userProfile.lastCourtSearch.location })
       };
       
       await firestore.collection(REQUESTS_COLLECTION).doc(requestKey).set(requestInfo);
@@ -5931,17 +6153,17 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Кнопка "Вернуться на главную"
   if (data === 'action_home') {
+    // Сбрасываем состояние заполнения анкеты тренера
+    coachRegistrationStates.delete(userId);
+    
     const profile = await getUserProfile(userId);
     const userName = profile?.name || query.from.first_name;
     
+    const mainMenuKeyboard6 = await getMainMenuKeyboard();
     await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
       parse_mode: 'HTML',
       reply_markup: {
-        keyboard: [
-          [{ text: '🎾 Найти корт (теннис)' }],
-          [{ text: '🏓 Найти корт (падел)' }],
-          [{ text: '👤 Профиль' }, { text: '💬 Чат участников' }]
-        ],
+        keyboard: mainMenuKeyboard6,
         resize_keyboard: true
       }
     });
