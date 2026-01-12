@@ -47,10 +47,13 @@ jobs:
           BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
           COACH_MEDIA_BUCKET: ${{ secrets.COACH_MEDIA_BUCKET }}
         run: |
-          ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
+          ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_PROJECT=${PROJECT_ID}"
           if [ -n "${COACH_MEDIA_BUCKET}" ]; then
             ENV_VARS="${ENV_VARS},COACH_MEDIA_BUCKET=${COACH_MEDIA_BUCKET}"
           fi
+          # Формируем URL функции uploadCoachMedia (будет установлен после её деплоя)
+          MEDIA_UPLOAD_FUNCTION_URL="https://${{ env.REGION }}-${PROJECT_ID}.cloudfunctions.net/uploadCoachMedia"
+          ENV_VARS="${ENV_VARS},MEDIA_UPLOAD_FUNCTION_URL=${MEDIA_UPLOAD_FUNCTION_URL}"
           if [ -n "${USE_BIGQUERY}" ]; then
             ENV_VARS="${ENV_VARS},USE_BIGQUERY=${USE_BIGQUERY}"
           fi
