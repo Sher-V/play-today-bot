@@ -150,6 +150,25 @@ async function createMediaUploadTask(fileId: string, userId: number, fileType: '
 
     const parent = client.queuePath(projectId, location, queue);
 
+    // Для gen2 функций (Cloud Run) нужна OIDC аутентификация
+    // Используем Cloud Tasks service account, который автоматически создается для очереди
+    // Формат: PROJECT_NUMBER@cloudtasks-service.iam.gserviceaccount.com
+    // Получаем project number из projectId (если это не number, нужно будет получить через API)
+    // Для упрощения используем compute service account: PROJECT_NUMBER-compute@developer.gserviceaccount.com
+    // Но лучше использовать Cloud Tasks service account напрямую
+    // Попробуем получить project number через metadata или использовать compute service account
+    const projectNumber = process.env.GCP_PROJECT_NUMBER;
+    let serviceAccountEmail: string;
+    
+    if (projectNumber) {
+      // Используем Cloud Tasks service account
+      serviceAccountEmail = `${projectNumber}@cloudtasks-service.iam.gserviceaccount.com`;
+    } else {
+      // Fallback: используем compute service account (требует получения project number)
+      // Временно используем формат appspot, но это может не работать
+      serviceAccountEmail = `${projectId}@appspot.gserviceaccount.com`;
+    }
+    
     const task = {
       httpRequest: {
         httpMethod: 'POST' as const,
@@ -158,10 +177,17 @@ async function createMediaUploadTask(fileId: string, userId: number, fileType: '
           'Content-Type': 'application/json',
         },
         body: Buffer.from(JSON.stringify(payload)).toString('base64'),
+        oidcToken: {
+          serviceAccountEmail: serviceAccountEmail,
+          audience: functionUrl,
+        },
       },
     };
+    
+    console.log(`[createMediaUploadTask] Using OIDC service account: ${serviceAccountEmail}`);
 
     console.log(`[createMediaUploadTask] Creating Cloud Task for user ${userId}, fileId: ${fileId}, type: ${fileType}`);
+    console.log(`[createMediaUploadTask] Using service account: ${serviceAccountEmail}`);
     const [response] = await client.createTask({ parent, task });
     console.log(`[createMediaUploadTask] Task created: ${response.name}`);
     

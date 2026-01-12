@@ -48,7 +48,9 @@ jobs:
           COACH_MEDIA_BUCKET: ${{ secrets.COACH_MEDIA_BUCKET }}
           CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
         run: |
-          ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_PROJECT=${PROJECT_ID}"
+          # Получаем project number для Cloud Tasks service account
+          PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format='value(projectNumber)')
+          ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GCS_BUCKET=${PROJECT_ID}-slots,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_PROJECT=${PROJECT_ID},GCP_PROJECT_NUMBER=${PROJECT_NUMBER}"
           if [ -n "${COACH_MEDIA_BUCKET}" ]; then
             ENV_VARS="${ENV_VARS},COACH_MEDIA_BUCKET=${COACH_MEDIA_BUCKET}"
           fi
@@ -131,17 +133,28 @@ jobs:
           CLOUD_TASKS_QUEUE: ${{ secrets.CLOUD_TASKS_QUEUE }}
         run: |
           QUEUE_NAME=${CLOUD_TASKS_QUEUE:-media-upload-queue}
-          # Получаем service account для Cloud Tasks
+          # Получаем project number для Cloud Tasks service account
           PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format='value(projectNumber)')
-          SERVICE_ACCOUNT="${PROJECT_NUMBER}@cloudtasks-service.iam.gserviceaccount.com"
-          echo "Granting Cloud Run Invoker role to ${SERVICE_ACCOUNT} for uploadCoachMedia..."
+          # Cloud Tasks service account (используется в OIDC токене)
+          CLOUD_TASKS_SA="${PROJECT_NUMBER}@cloudtasks-service.iam.gserviceaccount.com"
+          echo "Project ID: ${PROJECT_ID}"
+          echo "Project Number: ${PROJECT_NUMBER}"
+          echo "Cloud Tasks Service Account: ${CLOUD_TASKS_SA}"
+          echo "Granting Cloud Run Invoker role to ${CLOUD_TASKS_SA} for uploadCoachMedia..."
           # Для gen2 функций используем Cloud Run команды
-          gcloud run services add-iam-policy-binding uploadCoachMedia \
+          if gcloud run services add-iam-policy-binding uploadCoachMedia \
             --region=${{ env.REGION }} \
-            --member="serviceAccount:${SERVICE_ACCOUNT}" \
+            --member="serviceAccount:${CLOUD_TASKS_SA}" \
             --role="roles/run.invoker" \
-            --platform=managed \
-            --quiet || echo "⚠️ Warning: Could not grant permissions (may already be set)"
+            --platform=managed; then
+            echo "✅ Permissions granted successfully to ${CLOUD_TASKS_SA}"
+          else
+            echo "⚠️ Warning: Could not grant permissions, trying to verify existing permissions..."
+            # Проверяем текущие права
+            gcloud run services get-iam-policy uploadCoachMedia \
+              --region=${{ env.REGION }} \
+              --platform=managed || echo "Could not get IAM policy"
+          fi
 
       - name: Deploy Send Coach Reminder Function
         env:
