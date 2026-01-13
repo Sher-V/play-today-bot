@@ -678,7 +678,6 @@ async function processMediaFile(
     profile.coachMedia = mediaArray;
     await saveUserProfile(userId, profile);
     
-    const message = fileType === 'video' ? USER_TEXTS.COACH_VIDEO_PROCESSING : USER_TEXTS.COACH_MEDIA_UPLOADED;
     const keyboard = context === 'registration' 
       ? {
           inline_keyboard: [
@@ -693,7 +692,7 @@ async function processMediaFile(
           ]
         };
     
-    await getBot().sendMessage(chatId, message, { reply_markup: keyboard });
+    await getBot().sendMessage(chatId, USER_TEXTS.COACH_MEDIA_UPLOADED, { reply_markup: keyboard });
   } else {
     await getBot().sendMessage(chatId, '❌ Ошибка при обработке файла. Попробуйте другой файл.', {
       reply_markup: {
