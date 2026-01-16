@@ -402,7 +402,8 @@ async function getMainMenuKeyboard(): Promise<TelegramBot.KeyboardButton[][]> {
   ];
   
   // Проверяем флаг для кнопки "Найти тренера"
-  const showFindCoach = true;
+  const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
+
   if (showFindCoach) {
     keyboard.push([{ text: '👤 Найти тренера' }]);
   }
@@ -920,11 +921,16 @@ async function getActiveCoaches(
  * Форматирует карточку тренера (без контактов)
  */
 function formatCoachCard(profile: UserProfile, currentIndex: number, totalCoaches: number): string {
-  let text = `🎾 <b>Тренер ${currentIndex + 1} из ${totalCoaches}</b>\n\n`;
-  text += `👤 <b>${profile.coachName || 'Имя не указано'}</b>\n\n`;
+  let text = `👤 <b>${profile.coachName || 'Имя не указано'}</b>\n\n`;
   
   if (profile.coachAbout) {
-    text += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+    // Используем Collapsible Quotes с атрибутом expandable
+    // Если описание больше 120 символов, помещаем его в expandable blockquote
+    if (profile.coachAbout.length > 120) {
+      text += `📝 <b>О тренере:</b>\n<blockquote expandable>${profile.coachAbout}</blockquote>\n\n`;
+    } else {
+      text += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+    }
   }
   
   if (profile.coachDistricts && profile.coachDistricts.length > 0) {
@@ -2265,7 +2271,8 @@ async function getPaginationKeyboard(
   }
   
   // Проверяем флаг для кнопки "Подобрать тренера"
-  const showFindCoach = true;
+  const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
+
   if (showFindCoach) {
     buttons.push([{ text: '👤 Подобрать тренера', callback_data: 'find_coach_start' }]);
   }
@@ -2417,22 +2424,8 @@ async function showCoachCard(
   // Формируем кнопки навигации
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
   
-  // Кнопки навигации
-  if (searchState.coachIds.length > 1) {
-    const navRow: TelegramBot.InlineKeyboardButton[] = [];
-    
-    if (searchState.currentIndex > 0) {
-      navRow.push({ text: '◀️ Предыдущий', callback_data: 'coach_prev' });
-    }
-    
-    if (searchState.currentIndex < searchState.coachIds.length - 1) {
-      navRow.push({ text: 'Следующий ▶️', callback_data: 'coach_next' });
-    }
-    
-    if (navRow.length > 0) {
-      buttons.push(navRow);
-    }
-  }
+  // Кнопка связи с тренером
+  buttons.push([{ text: '📩 Связаться с тренером', callback_data: `coach_request_${coachUserId}` }]);
   
   // Кнопка "Показать все медиа" если медиа больше 1
   if (coachProfile.coachMedia && coachProfile.coachMedia.length > 1) {
@@ -2444,9 +2437,27 @@ async function showCoachCard(
     buttons.push([{ text: '👥 Показать всех тренеров', callback_data: 'coach_show_all' }]);
   }
   
-  // Кнопка отправки заявки
-  buttons.push([{ text: '📩 Отправить заявку', callback_data: `coach_request_${coachUserId}` }]);
-  buttons.push([{ text: '🏠 На главную', callback_data: 'action_home' }]);
+  // Кнопки навигации внизу (если больше одного тренера)
+  if (searchState.coachIds.length > 1) {
+    const navRow: TelegramBot.InlineKeyboardButton[] = [];
+    
+    if (searchState.currentIndex > 0) {
+      navRow.push({ text: '◀️ Назад', callback_data: 'coach_prev' });
+    }
+    
+    // Кнопка с номером тренера в центре
+    const currentNumber = searchState.currentIndex + 1;
+    const totalNumber = searchState.coachIds.length;
+    navRow.push({ text: `${currentNumber}/${totalNumber}`, callback_data: 'coach_noop' }); // noop - не делает ничего
+    
+    if (searchState.currentIndex < searchState.coachIds.length - 1) {
+      navRow.push({ text: 'Вперед ▶️', callback_data: 'coach_next' });
+    }
+    
+    if (navRow.length > 0) {
+      buttons.push(navRow);
+    }
+  }
   
   const keyboard = { inline_keyboard: buttons };
   
@@ -5280,7 +5291,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     let profileText = `👤 <b>${profile.coachName || 'Имя не указано'}</b>\n\n`;
     
     if (profile.coachAbout) {
-      profileText += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+      // Используем Collapsible Quotes с атрибутом expandable
+      // Если описание больше 120 символов, помещаем его в expandable blockquote
+      if (profile.coachAbout.length > 120) {
+        profileText += `📝 <b>О тренере:</b>\n<blockquote expandable>${profile.coachAbout}</blockquote>\n\n`;
+      } else {
+        profileText += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+      }
     }
     
     if (profile.coachDistricts && profile.coachDistricts.length > 0) {
@@ -5885,6 +5902,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data === 'find_coach_type_any') {
     const messageId = query.message?.message_id;
     await handleCoachSearch(chatId, userId, 'any', query, messageId);
+    return;
+  }
+
+  // Обработка клика на кнопку с номером тренера (noop - ничего не делает)
+  if (data === 'coach_noop') {
+    await safeAnswerCallbackQuery(query.id);
     return;
   }
 
