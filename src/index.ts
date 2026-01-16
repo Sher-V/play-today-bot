@@ -120,15 +120,18 @@ async function createMediaUploadTask(fileId: string, userId: number, fileType: '
         },
         body: JSON.stringify(payload),
       })
-        .then(response => {
+        .then(async response => {
           if (response.ok) {
-            console.log(`[createMediaUploadTask] Local function accepted the request for ${fileType}`);
+            const result = await response.json().catch(() => ({}));
+            console.log(`[createMediaUploadTask] ✅ Local function accepted the request for ${fileType}, response:`, result);
           } else {
-            console.error(`[createMediaUploadTask] Local function error: ${response.status}`);
+            const errorText = await response.text().catch(() => 'Unknown error');
+            console.error(`[createMediaUploadTask] ❌ Local function error: ${response.status}, body: ${errorText}`);
           }
         })
         .catch(error => {
-          console.error('[createMediaUploadTask] Failed to call local function:', error.message);
+          console.error(`[createMediaUploadTask] ❌ Failed to call local function: ${error.message}`);
+          console.error(`[createMediaUploadTask] Make sure the upload function is running at ${localFunctionUrl}`);
         });
       
       return true;
@@ -231,9 +234,17 @@ async function uploadMediaToStorage(fileId: string, userId: number, fileType: 'p
     const taskCreated = await createMediaUploadTask(fileId, userId, fileType);
     
     if (!taskCreated) {
-      console.error('[uploadMediaToStorage] Failed to create upload task');
-      return null;
+      console.error(`[uploadMediaToStorage] ❌ Failed to create upload task for userId: ${userId}, fileId: ${fileId}, fileType: ${fileType}`);
+      console.error(`[uploadMediaToStorage] This means publicUrl will NOT be added to the media item!`);
+      // Все равно возвращаем объект, но без publicUrl (он будет добавлен позже, если задача будет создана вручную)
+      return {
+        type: fileType,
+        fileId,
+        uploadedAt
+      };
     }
+    
+    console.log(`[uploadMediaToStorage] ✅ Upload task created successfully. publicUrl will be added by uploadCoachMedia function`);
     
     // Возвращаем объект с file_id, publicUrl будет добавлен позже функцией uploadCoachMedia
     return {
@@ -391,7 +402,7 @@ async function getMainMenuKeyboard(): Promise<TelegramBot.KeyboardButton[][]> {
   ];
   
   // Проверяем флаг для кнопки "Найти тренера"
-  const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
+  const showFindCoach = true;
   if (showFindCoach) {
     keyboard.push([{ text: '👤 Найти тренера' }]);
   }
@@ -2254,7 +2265,7 @@ async function getPaginationKeyboard(
   }
   
   // Проверяем флаг для кнопки "Подобрать тренера"
-  const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
+  const showFindCoach = true;
   if (showFindCoach) {
     buttons.push([{ text: '👤 Подобрать тренера', callback_data: 'find_coach_start' }]);
   }
@@ -2353,6 +2364,36 @@ async function handleCoachSearch(
 }
 
 /**
+ * Проверяет, является ли fileId валидным для использования в Telegram API
+ * fileId должен быть непустой строкой и не должен быть URL
+ */
+function isValidFileId(fileId: string | undefined): boolean {
+  if (!fileId || fileId.trim().length === 0) {
+    return false;
+  }
+  // Проверяем, что это не URL (не начинается с http:// или https://)
+  if (fileId.startsWith('http://') || fileId.startsWith('https://')) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Проверяет доступность файла через Telegram API
+ * Возвращает true, если файл доступен, false в противном случае
+ */
+async function isFileAvailable(fileId: string): Promise<boolean> {
+  try {
+    await getBot().getFile(fileId);
+    return true;
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+    console.log(`[isFileAvailable] File ${fileId} is not available: ${errorMessage}`);
+    return false;
+  }
+}
+
+/**
  * Показывает карточку тренера
  */
 async function showCoachCard(
@@ -2420,7 +2461,125 @@ async function showCoachCard(
   
   // Если есть медиа, отправляем первое медиа с описанием
   if (coachProfile.coachMedia && coachProfile.coachMedia.length > 0) {
-    const firstMedia = coachProfile.coachMedia[0];
+    // Ищем первую попавшуюся фотографию, если нет - берем первый элемент
+    const firstMedia = coachProfile.coachMedia.find(media => media.type === 'photo') || coachProfile.coachMedia[0];
+    
+    // Проверяем валидность fileId
+    if (!isValidFileId(firstMedia.fileId)) {
+      console.error(`[showCoachCard] Invalid fileId format for media: ${firstMedia.fileId}`);
+      // Отправляем только текст, если fileId невалиден
+      // Если есть старое сообщение с медиа, удаляем его и отправляем новое текстовое
+      if (messageId) {
+        try {
+          await getBot().deleteMessage(chatId, messageId);
+          console.log(`[showCoachCard] Deleted old message ${messageId} with invalid media`);
+        } catch (error) {
+          console.error('[showCoachCard] Error deleting old message:', error);
+          // Продолжаем даже если не удалось удалить
+        }
+      }
+      // Отправляем новое текстовое сообщение
+      try {
+        console.log(`[showCoachCard] Sending text message without media (invalid fileId)`);
+        await getBot().sendMessage(chatId, text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        });
+        console.log(`[showCoachCard] Successfully sent text message without media`);
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        console.error(`[showCoachCard] Error sending text message: ${errorMessage}`);
+        // Пытаемся отправить без форматирования, если HTML не работает
+        try {
+          await getBot().sendMessage(chatId, text.replace(/<[^>]*>/g, ''), {
+            reply_markup: keyboard
+          });
+        } catch (fallbackError) {
+          console.error(`[showCoachCard] Error sending fallback message: ${getErrorMessage(fallbackError)}`);
+        }
+      }
+      return;
+    }
+    
+    // Проверяем доступность файла через Telegram API
+    const fileAvailable = await isFileAvailable(firstMedia.fileId!);
+    if (!fileAvailable) {
+      console.error(`[showCoachCard] File ${firstMedia.fileId} is not available (expired or invalid)`);
+      
+      // Пытаемся использовать publicUrl из GCS, если он есть
+      if (firstMedia.publicUrl && (firstMedia.publicUrl.startsWith('http://') || firstMedia.publicUrl.startsWith('https://'))) {
+        console.log(`[showCoachCard] Using publicUrl from GCS: ${firstMedia.publicUrl}`);
+        
+        // При редактировании сообщения с медиа - удаляем старое и отправляем новое
+        if (messageId) {
+          try {
+            await getBot().deleteMessage(chatId, messageId);
+            console.log(`[showCoachCard] Deleted old message ${messageId}`);
+          } catch (error) {
+            console.error('[showCoachCard] Error deleting old message:', error);
+          }
+        }
+        
+        try {
+          // Отправляем медиа через publicUrl
+          if (firstMedia.type === 'photo') {
+            console.log(`[showCoachCard] Sending photo via publicUrl: ${firstMedia.publicUrl}`);
+            await getBot().sendPhoto(chatId, firstMedia.publicUrl, {
+              caption,
+              parse_mode: 'HTML',
+              reply_markup: keyboard
+            });
+            console.log(`[showCoachCard] Successfully sent photo via publicUrl`);
+          } else if (firstMedia.type === 'video') {
+            console.log(`[showCoachCard] Sending video via publicUrl: ${firstMedia.publicUrl}`);
+            await getBot().sendVideo(chatId, firstMedia.publicUrl, {
+              caption,
+              parse_mode: 'HTML',
+              reply_markup: keyboard
+            });
+            console.log(`[showCoachCard] Successfully sent video via publicUrl`);
+          }
+          return;
+        } catch (error) {
+          const errorMessage = getErrorMessage(error);
+          console.error(`[showCoachCard] Error sending media via publicUrl: ${errorMessage}`);
+          // Fallback: продолжаем отправку текста
+        }
+      }
+      
+      // Если publicUrl нет или не сработал, отправляем только текст
+      // Если есть старое сообщение с медиа, удаляем его и отправляем новое текстовое
+      if (messageId) {
+        try {
+          await getBot().deleteMessage(chatId, messageId);
+          console.log(`[showCoachCard] Deleted old message ${messageId} with unavailable media`);
+        } catch (error) {
+          console.error('[showCoachCard] Error deleting old message:', error);
+          // Продолжаем даже если не удалось удалить
+        }
+      }
+      // Отправляем новое текстовое сообщение
+      try {
+        console.log(`[showCoachCard] Sending text message without media (file unavailable, no publicUrl)`);
+        await getBot().sendMessage(chatId, text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        });
+        console.log(`[showCoachCard] Successfully sent text message without media`);
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        console.error(`[showCoachCard] Error sending text message: ${errorMessage}`);
+        // Пытаемся отправить без форматирования, если HTML не работает
+        try {
+          await getBot().sendMessage(chatId, text.replace(/<[^>]*>/g, ''), {
+            reply_markup: keyboard
+          });
+        } catch (fallbackError) {
+          console.error(`[showCoachCard] Error sending fallback message: ${getErrorMessage(fallbackError)}`);
+        }
+      }
+      return;
+    }
     
     // При редактировании сообщения с медиа - удаляем старое и отправляем новое
     if (messageId) {
@@ -2438,20 +2597,23 @@ async function showCoachCard(
     
     try {
       if (firstMedia.type === 'photo') {
-        await getBot().sendPhoto(chatId, firstMedia.fileId, {
+        console.log(`[showCoachCard] Sending photo with fileId: ${firstMedia.fileId}`);
+        await getBot().sendPhoto(chatId, firstMedia.fileId!, {
           caption,
           parse_mode: 'HTML',
           reply_markup: keyboard
         });
       } else if (firstMedia.type === 'video') {
-        await getBot().sendVideo(chatId, firstMedia.fileId, {
+        console.log(`[showCoachCard] Sending video with fileId: ${firstMedia.fileId}`);
+        await getBot().sendVideo(chatId, firstMedia.fileId!, {
           caption,
           parse_mode: 'HTML',
           reply_markup: keyboard
         });
       }
     } catch (error) {
-      console.error('[showCoachCard] Error sending media with caption:', error);
+      const errorMessage = getErrorMessage(error);
+      console.error(`[showCoachCard] Error sending media with caption: ${errorMessage}`);
       // Fallback: отправляем текст отдельно
       await getBot().sendMessage(chatId, text, {
         parse_mode: 'HTML',
@@ -2853,11 +3015,29 @@ async function handleMessage(msg: TelegramBot.Message) {
     }
   }
   
+  /**
+   * Определяет, является ли документ видео по MIME type или расширению
+   */
+  function isVideoDocument(document: TelegramBot.Document): boolean {
+    if (document.mime_type) {
+      return document.mime_type.startsWith('video/');
+    }
+    
+    // Проверяем по расширению файла, если MIME type не указан
+    if (document.file_name) {
+      const ext = document.file_name.split('.').pop()?.toLowerCase();
+      const videoExtensions = ['mp4', 'mov', 'avi', 'webm', 'mkv', 'flv', 'wmv', 'm4v', '3gp'];
+      return videoExtensions.includes(ext || '');
+    }
+    
+    return false;
+  }
+
   // Обработка медиа при редактировании
   if (userId) {
     const editStep = coachEditStates.get(userId);
     
-    if (editStep === CoachEditStep.MEDIA && (msg.photo || msg.video)) {
+    if (editStep === CoachEditStep.MEDIA && (msg.photo || msg.video || msg.document)) {
       let fileId: string | undefined;
       let fileType: 'photo' | 'video' | undefined;
       
@@ -2867,6 +3047,11 @@ async function handleMessage(msg: TelegramBot.Message) {
       } else if (msg.video) {
         fileId = msg.video.file_id;
         fileType = 'video';
+      } else if (msg.document && isVideoDocument(msg.document)) {
+        // Обрабатываем документ как видео, если это видео-файл (например, MOV)
+        fileId = msg.document.file_id;
+        fileType = 'video';
+        console.log(`[handleMessage] Detected video document: ${msg.document.file_name || 'unknown'}, mime_type: ${msg.document.mime_type || 'unknown'}`);
       }
       
       if (fileId && fileType) {
@@ -2881,7 +3066,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   if (userId) {
     const currentStep = coachRegistrationStates.get(userId);
     
-    if (currentStep === CoachRegistrationStep.MEDIA && (msg.photo || msg.video)) {
+    if (currentStep === CoachRegistrationStep.MEDIA && (msg.photo || msg.video || msg.document)) {
       // Получаем file_id и тип файла
       let fileId: string | undefined;
       let fileType: 'photo' | 'video' | undefined;
@@ -2893,6 +3078,11 @@ async function handleMessage(msg: TelegramBot.Message) {
       } else if (msg.video) {
         fileId = msg.video.file_id;
         fileType = 'video';
+      } else if (msg.document && isVideoDocument(msg.document)) {
+        // Обрабатываем документ как видео, если это видео-файл (например, MOV)
+        fileId = msg.document.file_id;
+        fileType = 'video';
+        console.log(`[handleMessage] Detected video document: ${msg.document.file_name || 'unknown'}, mime_type: ${msg.document.mime_type || 'unknown'}`);
       }
       
       if (fileId && fileType) {
@@ -5175,35 +5365,123 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         caption = caption.substring(0, maxCaptionLength - 30) + '\n\n...(полный текст ниже)';
       }
       
-      try {
-        // Отправляем первое медиа с текстом профиля и кнопками
-        if (firstMedia.type === 'photo') {
-          await getBot().sendPhoto(chatId, firstMedia.fileId, {
-            caption,
-            parse_mode: 'HTML',
-            reply_markup: keyboard
-          });
-        } else if (firstMedia.type === 'video') {
-          await getBot().sendVideo(chatId, firstMedia.fileId, {
-            caption,
-            parse_mode: 'HTML',
-            reply_markup: keyboard
-          });
+      // Проверяем валидность fileId
+      if (!isValidFileId(firstMedia.fileId)) {
+        console.error(`[coach_view_profile] Invalid fileId format for media: ${firstMedia.fileId}`);
+        
+        // Пытаемся использовать publicUrl из GCS, если он есть
+        if (firstMedia.publicUrl && (firstMedia.publicUrl.startsWith('http://') || firstMedia.publicUrl.startsWith('https://'))) {
+          console.log(`[coach_view_profile] Using publicUrl from GCS: ${firstMedia.publicUrl}`);
+          try {
+            if (firstMedia.type === 'photo') {
+              await getBot().sendPhoto(chatId, firstMedia.publicUrl, {
+                caption,
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+              });
+            } else if (firstMedia.type === 'video') {
+              await getBot().sendVideo(chatId, firstMedia.publicUrl, {
+                caption,
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+              });
+            }
+            // Если текст был обрезан, отправляем полный текст отдельно
+            if (fullProfileText.length > maxCaptionLength) {
+              await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
+                parse_mode: 'HTML'
+              });
+            }
+            return;
+          } catch (error) {
+            const errorMessage = getErrorMessage(error);
+            console.error(`[coach_view_profile] Error sending media via publicUrl: ${errorMessage}`);
+            // Fallback: продолжаем отправку текста
+          }
         }
         
-        // Если текст был обрезан, отправляем полный текст отдельно
-        if (fullProfileText.length > maxCaptionLength) {
-          await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
-            parse_mode: 'HTML'
-          });
-        }
-      } catch (error) {
-        console.error(`[coach_view_profile] Error sending media:`, error);
-        // Fallback: отправляем текст отдельно
+        // Отправляем только текст, если fileId невалиден и publicUrl не сработал
         await getBot().sendMessage(chatId, fullProfileText, {
           parse_mode: 'HTML',
           reply_markup: keyboard
         });
+      } else {
+        // Проверяем доступность файла через Telegram API
+        const fileAvailable = await isFileAvailable(firstMedia.fileId!);
+        if (!fileAvailable) {
+          console.error(`[coach_view_profile] File ${firstMedia.fileId} is not available (expired or invalid)`);
+          
+          // Пытаемся использовать publicUrl из GCS, если он есть
+          if (firstMedia.publicUrl && (firstMedia.publicUrl.startsWith('http://') || firstMedia.publicUrl.startsWith('https://'))) {
+            console.log(`[coach_view_profile] Using publicUrl from GCS: ${firstMedia.publicUrl}`);
+            try {
+              if (firstMedia.type === 'photo') {
+                await getBot().sendPhoto(chatId, firstMedia.publicUrl, {
+                  caption,
+                  parse_mode: 'HTML',
+                  reply_markup: keyboard
+                });
+              } else if (firstMedia.type === 'video') {
+                await getBot().sendVideo(chatId, firstMedia.publicUrl, {
+                  caption,
+                  parse_mode: 'HTML',
+                  reply_markup: keyboard
+                });
+              }
+              // Если текст был обрезан, отправляем полный текст отдельно
+              if (fullProfileText.length > maxCaptionLength) {
+                await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
+                  parse_mode: 'HTML'
+                });
+              }
+              return;
+            } catch (error) {
+              const errorMessage = getErrorMessage(error);
+              console.error(`[coach_view_profile] Error sending media via publicUrl: ${errorMessage}`);
+              // Fallback: продолжаем отправку текста
+            }
+          }
+          
+          // Отправляем только текст, если файл недоступен и publicUrl не сработал
+          await getBot().sendMessage(chatId, fullProfileText, {
+            parse_mode: 'HTML',
+            reply_markup: keyboard
+          });
+        } else {
+          try {
+            // Отправляем первое медиа с текстом профиля и кнопками
+            if (firstMedia.type === 'photo') {
+              console.log(`[coach_view_profile] Sending photo with fileId: ${firstMedia.fileId}`);
+              await getBot().sendPhoto(chatId, firstMedia.fileId!, {
+                caption,
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+              });
+            } else if (firstMedia.type === 'video') {
+              console.log(`[coach_view_profile] Sending video with fileId: ${firstMedia.fileId}`);
+              await getBot().sendVideo(chatId, firstMedia.fileId!, {
+                caption,
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+              });
+            }
+            
+            // Если текст был обрезан, отправляем полный текст отдельно
+            if (fullProfileText.length > maxCaptionLength) {
+              await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
+                parse_mode: 'HTML'
+              });
+            }
+          } catch (error) {
+            const errorMessage = getErrorMessage(error);
+            console.error(`[coach_view_profile] Error sending media: ${errorMessage}`);
+            // Fallback: отправляем текст отдельно
+            await getBot().sendMessage(chatId, fullProfileText, {
+              parse_mode: 'HTML',
+              reply_markup: keyboard
+            });
+          }
+        }
       }
     } else {
       // Если медиа нет, отправляем просто текст с кнопками
@@ -5671,30 +5949,63 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     if (coachProfile && coachProfile.coachMedia && coachProfile.coachMedia.length > 1) {
       // Отправляем все медиа (кроме первого, который уже показан)
-      const remainingMedia = coachProfile.coachMedia.slice(1);
+      const remainingMedia = coachProfile.coachMedia.slice(1).filter(media => isValidFileId(media.fileId) || (media.publicUrl && (media.publicUrl.startsWith('http://') || media.publicUrl.startsWith('https://'))));
+      
+      if (remainingMedia.length === 0) {
+        await safeAnswerCallbackQuery(query.id, { text: '❌ Медиа недоступны (недействительные идентификаторы файлов)' });
+        return;
+      }
+      
+      // Проверяем доступность каждого файла и выбираем file_id или publicUrl
+      const availableMedia: Array<{ type: 'photo' | 'video'; media: string }> = [];
+      for (const media of remainingMedia) {
+        let mediaSource: string | null = null;
+        
+        // Сначала пытаемся использовать file_id, если он валиден
+        if (isValidFileId(media.fileId)) {
+          const fileAvailable = await isFileAvailable(media.fileId!);
+          if (fileAvailable) {
+            mediaSource = media.fileId!;
+            console.log(`[coach_show_media] Using fileId for ${media.type}: ${media.fileId}`);
+          }
+        }
+        
+        // Если file_id недоступен, используем publicUrl
+        if (!mediaSource && media.publicUrl && (media.publicUrl.startsWith('http://') || media.publicUrl.startsWith('https://'))) {
+          mediaSource = media.publicUrl;
+          console.log(`[coach_show_media] Using publicUrl for ${media.type}: ${media.publicUrl}`);
+        }
+        
+        if (mediaSource) {
+          availableMedia.push({
+            type: media.type as 'photo' | 'video',
+            media: mediaSource
+          });
+        } else {
+          console.log(`[coach_show_media] Skipping unavailable file (no valid fileId or publicUrl): ${media.fileId}`);
+        }
+      }
+      
+      if (availableMedia.length === 0) {
+        await safeAnswerCallbackQuery(query.id, { text: '❌ Медиа недоступны (файлы истекли или недействительны)' });
+        return;
+      }
       
       try {
-        if (remainingMedia.length <= 10) {
-          const mediaGroup = remainingMedia.map((media) => ({
-            type: media.type as 'photo' | 'video',
-            media: media.fileId
-          }));
-          
-          await getBot().sendMediaGroup(chatId, mediaGroup);
+        if (availableMedia.length <= 10) {
+          await getBot().sendMediaGroup(chatId, availableMedia);
+          console.log(`[coach_show_media] Successfully sent ${availableMedia.length} media items`);
         } else {
           // Если больше 10, отправляем группами по 10
-          for (let i = 0; i < remainingMedia.length; i += 10) {
-            const batch = remainingMedia.slice(i, i + 10);
-            const mediaGroup = batch.map((media) => ({
-              type: media.type as 'photo' | 'video',
-              media: media.fileId
-            }));
-            
-            await getBot().sendMediaGroup(chatId, mediaGroup);
+          for (let i = 0; i < availableMedia.length; i += 10) {
+            const batch = availableMedia.slice(i, i + 10);
+            await getBot().sendMediaGroup(chatId, batch);
+            console.log(`[coach_show_media] Successfully sent batch ${Math.floor(i / 10) + 1} with ${batch.length} media items`);
           }
         }
       } catch (error) {
-        console.error('[coach_show_media] Error sending media:', error);
+        const errorMessage = getErrorMessage(error);
+        console.error(`[coach_show_media] Error sending media: ${errorMessage}`);
         await getBot().sendMessage(chatId, '❌ Ошибка при загрузке медиа');
       }
     }

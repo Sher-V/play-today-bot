@@ -169,26 +169,62 @@ export const uploadCoachMedia: HttpFunction = async (req, res) => {
     console.log(`[uploadCoachMedia] ✅ Upload complete in ${uploadTime}s! Public URL: ${publicUrl}`);
 
     // Обновляем профиль пользователя в Firestore
-    console.log('[uploadCoachMedia] Updating user profile in Firestore...');
+    console.log(`[uploadCoachMedia] Updating user profile in Firestore for userId: ${userId}, fileId: ${fileId}`);
     const userDoc = await firestore.collection(USERS_COLLECTION).doc(userId.toString()).get();
     
-    if (userDoc.exists) {
-      const profile = userDoc.data() as UserProfile;
-      if (profile && profile.coachMedia) {
-        // Находим медиа-объект по fileId и добавляем publicUrl
-        const mediaItem = profile.coachMedia.find(item => item.fileId === fileId);
-        if (mediaItem) {
-          mediaItem.publicUrl = publicUrl;
-          await firestore.collection(USERS_COLLECTION).doc(userId.toString()).set(profile, { merge: true });
-          console.log('[uploadCoachMedia] ✅ Profile updated with public URL');
-        } else {
-          console.warn('[uploadCoachMedia] ⚠️ Media item with fileId not found in profile');
-        }
-      } else {
-        console.warn('[uploadCoachMedia] ⚠️ No coachMedia array in profile');
-      }
-    } else {
-      console.warn('[uploadCoachMedia] ⚠️ User profile not found');
+    if (!userDoc.exists) {
+      console.error(`[uploadCoachMedia] ❌ User profile not found for userId: ${userId}`);
+      res.status(404).json({
+        success: false,
+        error: 'User profile not found'
+      });
+      return;
+    }
+    
+    const profile = userDoc.data() as UserProfile;
+    if (!profile) {
+      console.error(`[uploadCoachMedia] ❌ Profile data is null for userId: ${userId}`);
+      res.status(500).json({
+        success: false,
+        error: 'Profile data is null'
+      });
+      return;
+    }
+    
+    if (!profile.coachMedia || !Array.isArray(profile.coachMedia)) {
+      console.error(`[uploadCoachMedia] ❌ No coachMedia array in profile for userId: ${userId}. Profile keys: ${Object.keys(profile).join(', ')}`);
+      res.status(500).json({
+        success: false,
+        error: 'No coachMedia array in profile'
+      });
+      return;
+    }
+    
+    // Находим медиа-объект по fileId и добавляем publicUrl
+    const mediaItem = profile.coachMedia.find(item => item.fileId === fileId);
+    if (!mediaItem) {
+      console.error(`[uploadCoachMedia] ❌ Media item with fileId ${fileId} not found in profile. Available fileIds: ${profile.coachMedia.map(m => m.fileId).join(', ')}`);
+      res.status(404).json({
+        success: false,
+        error: 'Media item not found in profile'
+      });
+      return;
+    }
+    
+    // Обновляем publicUrl
+    mediaItem.publicUrl = publicUrl;
+    console.log(`[uploadCoachMedia] Updating media item with fileId ${fileId}, new publicUrl: ${publicUrl}`);
+    
+    try {
+      await firestore.collection(USERS_COLLECTION).doc(userId.toString()).set(profile, { merge: true });
+      console.log(`[uploadCoachMedia] ✅ Profile updated successfully with public URL for fileId: ${fileId}`);
+    } catch (updateError) {
+      console.error(`[uploadCoachMedia] ❌ Error updating profile in Firestore:`, updateError);
+      res.status(500).json({
+        success: false,
+        error: `Failed to update profile: ${updateError instanceof Error ? updateError.message : 'Unknown error'}`
+      });
+      return;
     }
 
     // Отправляем успешный ответ
