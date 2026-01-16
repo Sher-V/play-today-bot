@@ -161,6 +161,29 @@ jobs:
           BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
           BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
         run: |
+          # Set the project explicitly to avoid conflicts
+          gcloud config set project ${PROJECT_ID}
+          
+          # Wait for any in-progress operations on this function to complete
+          echo "Checking for in-progress operations..."
+          MAX_WAIT=300  # 5 minutes
+          ELAPSED=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            IN_PROGRESS=$(gcloud functions operations list \
+              --region=${{ env.REGION }} \
+              --gen2 \
+              --project=${PROJECT_ID} \
+              --filter="metadata.target.name:sendCoachReminder AND done:false" \
+              --format="value(name)" 2>/dev/null || echo "")
+            if [ -z "$IN_PROGRESS" ]; then
+              echo "No in-progress operations found"
+              break
+            fi
+            echo "Waiting for in-progress operations to complete... (${ELAPSED}s)"
+            sleep 15
+            ELAPSED=$((ELAPSED + 15))
+          done
+          
           ENV_VARS="BOT_TOKEN=${BOT_TOKEN},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
           if [ -n "${USE_BIGQUERY}" ]; then
             ENV_VARS="${ENV_VARS},USE_BIGQUERY=${USE_BIGQUERY}"
@@ -171,19 +194,43 @@ jobs:
           if [ -n "${BIGQUERY_TABLE}" ]; then
             ENV_VARS="${ENV_VARS},BIGQUERY_TABLE=${BIGQUERY_TABLE}"
           fi
-          gcloud functions deploy sendCoachReminder \
-            --gen2 \
-            --runtime=nodejs20 \
-            --trigger-http \
-            --no-allow-unauthenticated \
-            --entry-point=sendCoachReminder \
-            --set-env-vars "${ENV_VARS}" \
-            --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
-            --region=${{ env.REGION }} \
-            --source=. \
-            --memory=256MB \
-            --timeout=60s \
-            --quiet
+          
+          # Deploy with explicit project flag and retry on 409 errors
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            set +e  # Temporarily disable exit on error for retry logic
+            gcloud functions deploy sendCoachReminder \
+              --gen2 \
+              --runtime=nodejs20 \
+              --trigger-http \
+              --no-allow-unauthenticated \
+              --entry-point=sendCoachReminder \
+              --set-env-vars "${ENV_VARS}" \
+              --set-build-env-vars "GOOGLE_NODE_RUN_SCRIPTS=" \
+              --region=${{ env.REGION }} \
+              --project=${PROJECT_ID} \
+              --source=. \
+              --memory=256MB \
+              --timeout=60s \
+              --quiet
+            EXIT_CODE=$?
+            set -e  # Re-enable exit on error
+            
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "✅ Deployment successful"
+              exit 0
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "⚠️ Deployment failed (exit code: $EXIT_CODE), retrying in 30 seconds... (attempt $RETRY_COUNT/$MAX_RETRIES)"
+                sleep 30
+              else
+                echo "❌ Deployment failed after $MAX_RETRIES attempts"
+                exit 1
+              fi
+            fi
+          done
 
       - name: Get Function URLs
         id: get-urls

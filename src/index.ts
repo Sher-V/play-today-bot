@@ -918,6 +918,16 @@ async function getActiveCoaches(
 }
 
 /**
+ * Экранирует HTML-символы в тексте для безопасного использования в HTML-разметке Telegram
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * Форматирует карточку тренера (без контактов)
  */
 function formatCoachCard(profile: UserProfile, currentIndex: number, totalCoaches: number): string {
@@ -926,10 +936,13 @@ function formatCoachCard(profile: UserProfile, currentIndex: number, totalCoache
   if (profile.coachAbout) {
     // Используем Collapsible Quotes с атрибутом expandable
     // Если описание больше 120 символов, помещаем его в expandable blockquote
+    // Экранируем HTML-символы для безопасного парсинга
     if (profile.coachAbout.length > 120) {
-      text += `📝 <b>О тренере:</b>\n<blockquote expandable>${profile.coachAbout}</blockquote>\n\n`;
+      const escapedAbout = escapeHtml(profile.coachAbout);
+      text += `📝 <b>О тренере:</b>\n<blockquote expandable>${escapedAbout}</blockquote>\n\n`;
     } else {
-      text += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+      const escapedAbout = escapeHtml(profile.coachAbout);
+      text += `📝 <b>О тренере:</b>\n${escapedAbout}\n\n`;
     }
   }
   
@@ -2467,13 +2480,27 @@ async function showCoachCard(
   
   if (caption.length > maxCaptionLength) {
     console.log(`[showCoachCard] Caption too long (${caption.length}), truncating`);
-    caption = caption.substring(0, maxCaptionLength - 30) + '\n\n...(полный текст выше)';
+    // Обрезаем текст, но проверяем, что не ломаем HTML-теги
+    let truncated = caption.substring(0, maxCaptionLength - 50); // Оставляем больше места для закрывающих тегов
+    
+    // Проверяем, есть ли незакрытый blockquote
+    const blockquoteOpenCount = (truncated.match(/<blockquote[^>]*>/g) || []).length;
+    const blockquoteCloseCount = (truncated.match(/<\/blockquote>/g) || []).length;
+    
+    // Если есть незакрытый blockquote, закрываем его
+    if (blockquoteOpenCount > blockquoteCloseCount) {
+      truncated += '</blockquote>';
+    }
+    
+    caption = truncated;
   }
   
   // Если есть медиа, отправляем первое медиа с описанием
   if (coachProfile.coachMedia && coachProfile.coachMedia.length > 0) {
     // Ищем первую попавшуюся фотографию, если нет - берем первый элемент
     const firstMedia = coachProfile.coachMedia.find(media => media.type === 'photo') || coachProfile.coachMedia[0];
+    
+    console.log(`[showCoachCard] Found media: type=${firstMedia.type}, fileId=${firstMedia.fileId}, publicUrl=${firstMedia.publicUrl || 'none'}`);
     
     // Проверяем валидность fileId
     if (!isValidFileId(firstMedia.fileId)) {
@@ -2514,6 +2541,8 @@ async function showCoachCard(
     
     // Проверяем доступность файла через Telegram API
     const fileAvailable = await isFileAvailable(firstMedia.fileId!);
+    console.log(`[showCoachCard] File available check: ${fileAvailable}, publicUrl: ${firstMedia.publicUrl || 'none'}`);
+    
     if (!fileAvailable) {
       console.error(`[showCoachCard] File ${firstMedia.fileId} is not available (expired or invalid)`);
       
@@ -2556,6 +2585,8 @@ async function showCoachCard(
           console.error(`[showCoachCard] Error sending media via publicUrl: ${errorMessage}`);
           // Fallback: продолжаем отправку текста
         }
+      } else {
+        console.log(`[showCoachCard] No publicUrl available or invalid format. publicUrl: ${firstMedia.publicUrl || 'undefined'}`);
       }
       
       // Если publicUrl нет или не сработал, отправляем только текст
@@ -2614,6 +2645,7 @@ async function showCoachCard(
           parse_mode: 'HTML',
           reply_markup: keyboard
         });
+        console.log(`[showCoachCard] Successfully sent photo with fileId`);
       } else if (firstMedia.type === 'video') {
         console.log(`[showCoachCard] Sending video with fileId: ${firstMedia.fileId}`);
         await getBot().sendVideo(chatId, firstMedia.fileId!, {
@@ -2621,11 +2653,41 @@ async function showCoachCard(
           parse_mode: 'HTML',
           reply_markup: keyboard
         });
+        console.log(`[showCoachCard] Successfully sent video with fileId`);
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error);
-      console.error(`[showCoachCard] Error sending media with caption: ${errorMessage}`);
-      // Fallback: отправляем текст отдельно
+      console.error(`[showCoachCard] Error sending media with fileId: ${errorMessage}`);
+      
+      // Fallback: пытаемся использовать publicUrl, если он есть
+      if (firstMedia.publicUrl && (firstMedia.publicUrl.startsWith('http://') || firstMedia.publicUrl.startsWith('https://'))) {
+        console.log(`[showCoachCard] Trying fallback with publicUrl: ${firstMedia.publicUrl}`);
+        try {
+          if (firstMedia.type === 'photo') {
+            await getBot().sendPhoto(chatId, firstMedia.publicUrl, {
+              caption,
+              parse_mode: 'HTML',
+              reply_markup: keyboard
+            });
+            console.log(`[showCoachCard] Successfully sent photo via publicUrl (fallback)`);
+            return;
+          } else if (firstMedia.type === 'video') {
+            await getBot().sendVideo(chatId, firstMedia.publicUrl, {
+              caption,
+              parse_mode: 'HTML',
+              reply_markup: keyboard
+            });
+            console.log(`[showCoachCard] Successfully sent video via publicUrl (fallback)`);
+            return;
+          }
+        } catch (fallbackError) {
+          const fallbackErrorMessage = getErrorMessage(fallbackError);
+          console.error(`[showCoachCard] Error sending media via publicUrl (fallback): ${fallbackErrorMessage}`);
+        }
+      }
+      
+      // Если все попытки не удались, отправляем текст отдельно
+      console.log(`[showCoachCard] All media sending attempts failed, sending text only`);
       await getBot().sendMessage(chatId, text, {
         parse_mode: 'HTML',
         reply_markup: keyboard
@@ -2874,7 +2936,7 @@ async function handleMessage(msg: TelegramBot.Message) {
     
     if (isNotCommand && currentStep === CoachRegistrationStep.ABOUT) {
       // Проверяем длину текста
-      if (text.length > 1000) {
+      if (text.length > 800) {
         await getBot().sendMessage(chatId, USER_TEXTS.COACH_ABOUT_TOO_LONG(text.length), {
           parse_mode: 'HTML'
         });
@@ -2987,7 +3049,7 @@ async function handleMessage(msg: TelegramBot.Message) {
     
     // Редактирование описания
     if (isNotCommand && editStep === CoachEditStep.ABOUT) {
-      if (text.length > 1000) {
+      if (text.length > 800) {
         await getBot().sendMessage(chatId, USER_TEXTS.COACH_ABOUT_TOO_LONG(text.length), {
           parse_mode: 'HTML'
         });
@@ -5293,10 +5355,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     if (profile.coachAbout) {
       // Используем Collapsible Quotes с атрибутом expandable
       // Если описание больше 120 символов, помещаем его в expandable blockquote
+      // Экранируем HTML-символы для безопасного парсинга
       if (profile.coachAbout.length > 120) {
-        profileText += `📝 <b>О тренере:</b>\n<blockquote expandable>${profile.coachAbout}</blockquote>\n\n`;
+        const escapedAbout = escapeHtml(profile.coachAbout);
+        profileText += `📝 <b>О тренере:</b>\n<blockquote expandable>${escapedAbout}</blockquote>\n\n`;
       } else {
-        profileText += `📝 <b>О тренере:</b>\n${profile.coachAbout}\n\n`;
+        const escapedAbout = escapeHtml(profile.coachAbout);
+        profileText += `📝 <b>О тренере:</b>\n${escapedAbout}\n\n`;
       }
     }
     
@@ -5379,7 +5444,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       if (caption.length > maxCaptionLength) {
         console.log(`[coach_view_profile] Caption too long (${caption.length}), truncating`);
-        caption = caption.substring(0, maxCaptionLength - 30) + '\n\n...(полный текст ниже)';
+        caption = caption.substring(0, maxCaptionLength - 30);
       }
       
       // Проверяем валидность fileId
@@ -5401,12 +5466,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
                 caption,
                 parse_mode: 'HTML',
                 reply_markup: keyboard
-              });
-            }
-            // Если текст был обрезан, отправляем полный текст отдельно
-            if (fullProfileText.length > maxCaptionLength) {
-              await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
-                parse_mode: 'HTML'
               });
             }
             return;
@@ -5445,12 +5504,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
                   reply_markup: keyboard
                 });
               }
-              // Если текст был обрезан, отправляем полный текст отдельно
-              if (fullProfileText.length > maxCaptionLength) {
-                await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
-                  parse_mode: 'HTML'
-                });
-              }
               return;
             } catch (error) {
               const errorMessage = getErrorMessage(error);
@@ -5480,13 +5533,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
                 caption,
                 parse_mode: 'HTML',
                 reply_markup: keyboard
-              });
-            }
-            
-            // Если текст был обрезан, отправляем полный текст отдельно
-            if (fullProfileText.length > maxCaptionLength) {
-              await getBot().sendMessage(chatId, `<b>📋 Полная информация:</b>\n\n${fullProfileText}`, {
-                parse_mode: 'HTML'
               });
             }
           } catch (error) {
@@ -5692,7 +5738,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     await getBot().sendMessage(chatId,
       `📝 <b>Изменение информации о себе</b>\n\n` +
       `Текущий текст:\n${currentAbout}\n\n` +
-      `Введите новый текст (максимум 1000 символов):`,
+      `Введите новый текст (максимум 800 символов):`,
       { parse_mode: 'HTML', reply_markup: {
         inline_keyboard: [[{ text: '« Отмена', callback_data: 'coach_edit_cancel' }]]
       }}
