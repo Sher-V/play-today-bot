@@ -574,6 +574,7 @@ interface CoachSearchState {
   coachIds: string[];  // Список ID тренеров для показа
   currentIndex: number;  // Текущий индекс в списке
   trainingType: 'individual' | 'group' | 'any';  // Тип тренировки
+  fromMainMenu?: boolean;  // Флаг: запрос пришел из главного меню
 }
 
 // Информация о заявке для отслеживания
@@ -2336,7 +2337,8 @@ async function handleCoachSearch(
   userId: number,
   trainingType: 'individual' | 'group' | 'any',
   query: TelegramBot.CallbackQuery,
-  messageId?: number
+  messageId?: number,
+  fromMainMenu: boolean = false
 ) {
   // Получаем районы пользователя для фильтрации
   const userProfile = await getUserProfile(userId);
@@ -2374,7 +2376,8 @@ async function handleCoachSearch(
   const searchState: CoachSearchState = {
     coachIds: coaches.map(c => c.userId),
     currentIndex: 0,
-    trainingType
+    trainingType,
+    fromMainMenu
   };
   coachSearchStates.set(userId, searchState);
   
@@ -3515,6 +3518,7 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
       
       // Показываем вопрос о типе тренировки
+      // Используем специальные callback_data с суффиксом _main для запросов из главного меню
       await getBot().sendMessage(chatId, 
         'Ответьте на один вопрос — и я покажу подходящих тренеров.\n\n' +
         '<b>Как хотите тренироваться?</b>',
@@ -3522,9 +3526,9 @@ async function handleMessage(msg: TelegramBot.Message) {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🎾 1 на 1 (тренер + я)', callback_data: 'find_coach_type_individual' }],
-              [{ text: '👥 Будем вдвоём / втроём (приведу друзей)', callback_data: 'find_coach_type_group' }],
-              [{ text: '⏭ Не важно', callback_data: 'find_coach_type_any' }]
+              [{ text: '🎾 1 на 1 (тренер + я)', callback_data: 'find_coach_type_individual_main' }],
+              [{ text: '👥 Будем вдвоём / втроём (приведу друзей)', callback_data: 'find_coach_type_group_main' }],
+              [{ text: '⏭ Не важно', callback_data: 'find_coach_type_any_main' }]
             ]
           }
         }
@@ -5930,24 +5934,45 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Подбор тренера - индивидуальная тренировка (из главного меню)
+  if (data === 'find_coach_type_individual_main') {
+    const messageId = query.message?.message_id;
+    await handleCoachSearch(chatId, userId, 'individual', query, messageId, true);
+    return;
+  }
+
+  // Подбор тренера - групповая тренировка (из главного меню)
+  if (data === 'find_coach_type_group_main') {
+    const messageId = query.message?.message_id;
+    await handleCoachSearch(chatId, userId, 'group', query, messageId, true);
+    return;
+  }
+
+  // Подбор тренера - любой тип (из главного меню)
+  if (data === 'find_coach_type_any_main') {
+    const messageId = query.message?.message_id;
+    await handleCoachSearch(chatId, userId, 'any', query, messageId, true);
+    return;
+  }
+
   // Подбор тренера - индивидуальная тренировка
   if (data === 'find_coach_type_individual') {
     const messageId = query.message?.message_id;
-    await handleCoachSearch(chatId, userId, 'individual', query, messageId);
+    await handleCoachSearch(chatId, userId, 'individual', query, messageId, false);
     return;
   }
 
   // Подбор тренера - групповая тренировка
   if (data === 'find_coach_type_group') {
     const messageId = query.message?.message_id;
-    await handleCoachSearch(chatId, userId, 'group', query, messageId);
+    await handleCoachSearch(chatId, userId, 'group', query, messageId, false);
     return;
   }
 
   // Подбор тренера - любой тип
   if (data === 'find_coach_type_any') {
     const messageId = query.message?.message_id;
-    await handleCoachSearch(chatId, userId, 'any', query, messageId);
+    await handleCoachSearch(chatId, userId, 'any', query, messageId, false);
     return;
   }
 
@@ -6212,39 +6237,47 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const trainingTypeText = trainingTypeLabels[trainingType] || trainingTypeLabels.any;
       
       // Формируем сообщение для тренера
-      let coachMessage = '🎾 <b>Новая заявка на тренировку!</b>\n\n';
-      coachMessage += `👤 <b>Игрок:</b> <b>${userName}</b>\n`;
+      let coachMessage = '<b>Новая заявка на тренировку!</b>\n\n';
+      coachMessage += `👤 <b>Игрок:</b> ${userName}\n`;
       coachMessage += `🏋️ <b>Формат:</b> ${trainingTypeText}\n`;
       
-      if (userLevel) {
-        const levelLabels: Record<string, string> = {
-          beginner: '🎾 Новичок',
-          intermediate: '🙂 Играл(а) немного',
-          advanced: '🔥 Уверенный любитель',
-          pro: '🏆 Сильный любитель'
-        };
-        coachMessage += `🎯 <b>Уровень:</b> ${levelLabels[userLevel] || userLevel}\n`;
+      // Если запрос из главного меню, не добавляем уровень и районы
+      if (!searchState?.fromMainMenu) {
+        if (userLevel) {
+          const levelLabels: Record<string, string> = {
+            beginner: '🎾 Новичок',
+            intermediate: '🙂 Играл(а) немного',
+            advanced: '🔥 Уверенный любитель',
+            pro: '🏆 Сильный любитель'
+          };
+          coachMessage += `🎯 <b>Уровень:</b> ${levelLabels[userLevel] || userLevel}\n`;
+        }
+        
+        if (userDistricts && userDistricts.length > 0) {
+          const locationLabels: Record<string, string> = {
+            north: 'Север',
+            west: 'Запад',
+            center: 'Центр',
+            east: 'Восток',
+            south: 'Юг',
+            'moscow-region': 'Подмосковье',
+            any: 'Не важно'
+          };
+          const districts = userDistricts.map(d => locationLabels[d] || d).join(', ');
+          coachMessage += `📍 <b>Районы:</b> ${districts}\n`;
+        }
+        
+        // Добавляем информацию о последнем поиске корта только если запрос НЕ из главного меню
+        if (userProfile?.lastCourtSearch) {
+          const { date, time, location } = userProfile.lastCourtSearch;
+          coachMessage += `\n🗓 Игрок искал корт на <b>${date}</b> (${time})\n`;
+          coachMessage += `📍 в районе: ${location}\n`;
+        }
       }
       
-      if (userDistricts && userDistricts.length > 0) {
-        const locationLabels: Record<string, string> = {
-          north: 'Север',
-          west: 'Запад',
-          center: 'Центр',
-          east: 'Восток',
-          south: 'Юг',
-          'moscow-region': 'Подмосковье',
-          any: 'Не важно'
-        };
-        const districts = userDistricts.map(d => locationLabels[d] || d).join(', ');
-        coachMessage += `📍 <b>Районы:</b> ${districts}\n`;
-      }
-      
-      // Добавляем информацию о последнем поиске корта
-      if (userProfile?.lastCourtSearch) {
-        const { date, time, location } = userProfile.lastCourtSearch;
-        coachMessage += `\n🗓 Игрок искал корт на <b>${date}</b> (${time})\n`;
-        coachMessage += `📍 в районе: ${location}\n`;
+      // Добавляем текст о договоренности для запросов из главного меню
+      if (searchState?.fromMainMenu) {
+        coachMessage += `\nДоговоритесь с игроком о времени и корте для тренировки в личных сообщениях.\n`;
       }
       
       // Добавляем напоминание об ответе
