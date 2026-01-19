@@ -26,7 +26,8 @@ export enum TennisSiteId {
   REZIDENCYA = "rezidenciya",
   TENNIS_RU = "tennis-ru",
   SPORT_STANCIYA = "sport-stanciya",
-  FLY_TENNIS = "fly-tennis"
+  FLY_TENNIS = "fly-tennis",
+  NAGATINSKAYA_TENNIS = "nagatinskaya-tennis"
 }
 
 // Названия площадок для отображения (теннис)
@@ -57,7 +58,8 @@ export const TENNIS_COURT_NAMES: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "Теннисный центр Резиденция",
   [TennisSiteId.TENNIS_RU]: "Tennis.ru",
   [TennisSiteId.SPORT_STANCIYA]: "Спорт Станция",
-  [TennisSiteId.FLY_TENNIS]: "Fly Tennis"
+  [TennisSiteId.FLY_TENNIS]: "Fly Tennis",
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: "Теннис Нагатинская"
 };
 
 // Ссылки на бронирование кортов (теннис)
@@ -88,7 +90,8 @@ export const TENNIS_COURT_LINKS: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "https://tennis-centre.ru/",
   [TennisSiteId.TENNIS_RU]: "https://tennis.ru/",
   [TennisSiteId.SPORT_STANCIYA]: "https://спортстанциябутово.рф/arenda-kortov",
-  [TennisSiteId.FLY_TENNIS]: "https://fly-tennis.ru/#yclients"
+  [TennisSiteId.FLY_TENNIS]: "https://fly-tennis.ru/#yclients",
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: "https://padlhub.ru/tennis_nagat_p"
 };
 
 // Ссылки на карты кортов (теннис)
@@ -119,7 +122,8 @@ export const TENNIS_COURT_MAPS: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "https://yandex.ru/maps/-/CLw8RPLm",
   [TennisSiteId.TENNIS_RU]: "https://yandex.ru/maps/-/CLwcUWi2",
   [TennisSiteId.SPORT_STANCIYA]: "https://yandex.ru/maps/-/CLHubQIP",
-  [TennisSiteId.FLY_TENNIS]: "https://yandex.ru/maps/-/CLD0jRyk"
+  [TennisSiteId.FLY_TENNIS]: "https://yandex.ru/maps/-/CLD0jRyk",
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: "https://yandex.ru/maps/-/CLh-jOi4"
 };
 
 // Маппинг метро/города для кортов (теннис)
@@ -150,7 +154,8 @@ export const TENNIS_COURT_METRO: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "Троицк",
   [TennisSiteId.TENNIS_RU]: "Коммунарка",
   [TennisSiteId.SPORT_STANCIYA]: "Бунинская аллея",
-  [TennisSiteId.FLY_TENNIS]: "Ховрино"
+  [TennisSiteId.FLY_TENNIS]: "Ховрино",
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: "Нагатинская"
 };
 
 // Маппинг округов/районов для кортов (теннис)
@@ -181,7 +186,8 @@ export const TENNIS_COURT_DISTRICTS: Record<string, string> = {
   [TennisSiteId.REZIDENCYA]: "Троицк",
   [TennisSiteId.TENNIS_RU]: "ЮЗАО",
   [TennisSiteId.SPORT_STANCIYA]: "ЮЗАО",
-  [TennisSiteId.FLY_TENNIS]: "СЗАО"
+  [TennisSiteId.FLY_TENNIS]: "СЗАО",
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: "ЮАО"
 };
 
 // Список кортов, где в метро указан город (не станция метро)
@@ -220,7 +226,8 @@ export const TENNIS_COURT_LOCATIONS: Record<string, string[]> = {
   [TennisSiteId.REZIDENCYA]: ["moscow-region"],
   [TennisSiteId.TENNIS_RU]: ["south", "west", "moscow-region"],
   [TennisSiteId.SPORT_STANCIYA]: ["south"],
-  [TennisSiteId.FLY_TENNIS]: ["north", "west"]
+  [TennisSiteId.FLY_TENNIS]: ["north", "west"],
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: ["south"]
 };
 
 /**

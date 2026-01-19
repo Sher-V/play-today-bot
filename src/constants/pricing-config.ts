@@ -262,6 +262,15 @@ export const COURT_PRICING: Record<string, CourtPricingConfig> = {
     ],
     workingHours: { startHour: 7, endHour: 24 }, // Корт работает с 7:00 до 00:00 (24:00)
   },
+  [TennisSiteId.NAGATINSKAYA_TENNIS]: {
+    weekday: [
+      { startHour: 7, endHour: 24, price: 3500 },
+    ],
+    weekend: [
+      { startHour: 7, endHour: 24, price: 3500 },
+    ],
+    workingHours: { startHour: 7, endHour: 24 }, // Корт работает с 7:00 до 00:00 (24:00)
+  },
 };
 
 

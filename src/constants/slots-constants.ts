@@ -381,6 +381,13 @@ export const VIVACRM_CONFIGS: VivaCrmConfig[] = [
     origin: "https://tennis.luzhniki.ru",
     daysAhead: 14
   },
+  {
+    name: TennisSiteId.NAGATINSKAYA_TENNIS,
+    tenantId: "iSkq6G",
+    serviceId: "6734a1e7-cc25-4024-b36a-41c0b134d213",
+    origin: "https://padlhub.ru",
+    daysAhead: 14
+  },
 ];
 
 // ⬇️ КОНФИГУРАЦИИ VIVACRM (api.vivacrm.ru) - ПАДЕЛ ⬇️
