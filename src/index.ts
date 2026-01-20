@@ -3429,16 +3429,16 @@ async function handleMessage(msg: TelegramBot.Message) {
       // Получаем профиль для определения статуса тренера
       const userProfileForMenu = userId ? await getUserProfile(userId) : null;
       const isCoachForMenu = userProfileForMenu?.isCoach || false;
-      const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
+      const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
       const moreMenuCoachButtonData = isCoachForMenu ? 'coach_view_profile' : 'profile_toggle_coach';
       
       // Показываем подменю "Еще" с inline-кнопками
       await getBot().sendMessage(chatId, 'Выберите действие:', {
         reply_markup: {
           inline_keyboard: [
+            [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
             [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
             [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
-            [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
             [{ text: '◀️ Назад', callback_data: 'action_home' }],
           ]
         }
@@ -3568,7 +3568,7 @@ async function handleMessage(msg: TelegramBot.Message) {
       profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
       profileMessage += `Что хочешь сделать?`;
       
-      const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
+      const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
       const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
       
       await getBot().sendMessage(chatId, profileMessage, {
