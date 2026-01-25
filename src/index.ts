@@ -392,6 +392,7 @@ const firestore = new Firestore();
 // Коллекция пользователей в Firestore
 const USERS_COLLECTION = 'users';
 const REQUESTS_COLLECTION = 'coachRequests';
+const GROUP_TRAININGS_COLLECTION = 'groupTrainings';
 
 /**
  * Формирует клавиатуру главного меню с учетом feature flags
@@ -401,11 +402,19 @@ async function getMainMenuKeyboard(): Promise<TelegramBot.KeyboardButton[][]> {
     [{ text: '🎾 Найти корт (теннис)' }]
   ];
   
-  // Проверяем флаг для кнопки "Найти тренера"
+  // Проверяем флаги для кнопок второго ряда
+  const showFindGroup = await getRemoteConfigValue('show_find_group', false);
   const showFindCoach = await getRemoteConfigValue('show_find_coach', false);
 
+  const secondRow: TelegramBot.KeyboardButton[] = [];
+  if (showFindGroup) {
+    secondRow.push({ text: '👥 Найти группу' });
+  }
   if (showFindCoach) {
-    keyboard.push([{ text: '👤 Найти тренера' }]);
+    secondRow.push({ text: '👤 Найти тренера' });
+  }
+  if (secondRow.length > 0) {
+    keyboard.push(secondRow);
   }
   
   keyboard.push([{ text: '⚙️ Еще' }, { text: '💬 Чат участников' }]);
@@ -454,6 +463,351 @@ async function updateUserFavorites(userId: number, favorites: string[]): Promise
   } catch (error) {
     console.error(`Ошибка обновления избранных кортов для пользователя ${userId}:`, error);
     return false;
+  }
+}
+
+/**
+ * Сохраняет групповую тренировку в Firestore
+ */
+async function saveGroupTraining(training: GroupTraining): Promise<boolean> {
+  try {
+    await firestore.collection(GROUP_TRAININGS_COLLECTION).doc(training.id).set(training);
+    return true;
+  } catch (error) {
+    console.error(`Ошибка сохранения групповой тренировки ${training.id}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Получает все активные групповые тренировки пользователя
+ */
+async function getUserGroupTrainings(userId: number): Promise<GroupTraining[]> {
+  try {
+    // Получаем все тренировки пользователя (без фильтрации по isActive, чтобы избежать необходимости в составном индексе)
+    const snapshot = await firestore
+      .collection(GROUP_TRAININGS_COLLECTION)
+      .where('userId', '==', userId)
+      .get();
+    
+    // Фильтруем активные тренировки и сортируем в коде
+    const trainings = snapshot.docs
+      .map(doc => {
+        const data = doc.data();
+        // Преобразуем createdAt в Date, если это Timestamp
+        if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+          data.createdAt = data.createdAt.toDate();
+        } else if (data.createdAt && !(data.createdAt instanceof Date)) {
+          data.createdAt = new Date(data.createdAt);
+        }
+        return data as GroupTraining;
+      })
+      .filter(training => training.isActive === true)
+      .sort((a, b) => {
+        // Сортируем по дате создания (новые первыми)
+        const dateA = a.createdAt instanceof Date ? a.createdAt.getTime() : new Date(a.createdAt).getTime();
+        const dateB = b.createdAt instanceof Date ? b.createdAt.getTime() : new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+    
+    return trainings;
+  } catch (error) {
+    console.error(`Ошибка получения групповых тренировок для пользователя ${userId}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Отменяет групповую тренировку (помечает как неактивную)
+ */
+async function cancelGroupTraining(trainingId: string): Promise<boolean> {
+  try {
+    await firestore.collection(GROUP_TRAININGS_COLLECTION).doc(trainingId).update({
+      isActive: false
+    });
+    return true;
+  } catch (error) {
+    console.error(`Ошибка отмены групповой тренировки ${trainingId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Парсит dateTime в формате "21.11 19:00" в компоненты (день, месяц 0-11, часы, минуты).
+ * Возвращает null при неверном формате.
+ */
+function parseGroupDateTime(dateTimeStr: string): { day: number; month: number; hours: number; minutes: number } | null {
+  const parts = dateTimeStr.trim().split(' ');
+  if (parts.length < 2) return null;
+  const datePart = parts[0];
+  const timePart = parts[1];
+  const [dayStr, monthStr] = datePart.split('.');
+  const [hoursStr, minutesStr] = timePart.split(':');
+  const day = parseInt(dayStr, 10);
+  const month = parseInt(monthStr, 10) - 1;
+  const hours = parseInt(hoursStr, 10);
+  const minutes = parseInt(minutesStr || '0', 10);
+  if (isNaN(day) || isNaN(month) || month < 0 || month > 11 || isNaN(hours) || isNaN(minutes)) return null;
+  return { day, month, hours, minutes };
+}
+
+/**
+ * Проверяет, не прошла ли дата/время разового занятия.
+ * Разовую группу не показываем, если текущее время уже позже начала занятия.
+ * Для регулярных (isRecurring !== false) всегда возвращает true.
+ */
+function isOneTimeGroupStillVisible(training: GroupTraining): boolean {
+  if (training.isRecurring !== false) {
+    return true; // регулярное место — показываем всегда
+  }
+  const parsed = parseGroupDateTime(training.dateTime);
+  if (!parsed) return true;
+  const now = getMoscowTime();
+  const sessionStart = new Date(now.getFullYear(), parsed.month, parsed.day, parsed.hours, parsed.minutes, 0);
+  return now < sessionStart; // показываем только если занятие ещё не началось
+}
+
+/**
+ * Возвращает дату/время для отображения группы.
+ * Для разовых — как сохранено (training.dateTime).
+ * Для регулярных — следующее занятие: начальная дата + N недель (N минимальное такое, что дата >= сейчас).
+ */
+function getDisplayDateTime(training: GroupTraining): string {
+  if (training.isRecurring !== true) {
+    return training.dateTime;
+  }
+  const parsed = parseGroupDateTime(training.dateTime);
+  if (!parsed) return training.dateTime;
+  const now = getMoscowTime();
+  let occurrence = new Date(now.getFullYear(), parsed.month, parsed.day, parsed.hours, parsed.minutes, 0);
+  while (occurrence < now) {
+    occurrence.setDate(occurrence.getDate() + 7);
+  }
+  const d = occurrence.getDate();
+  const m = occurrence.getMonth() + 1;
+  const h = occurrence.getHours();
+  const min = occurrence.getMinutes();
+  return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+/**
+ * Получает все активные групповые тренировки (для поиска)
+ */
+async function getAllActiveGroupTrainings(): Promise<GroupTraining[]> {
+  try {
+    const snapshot = await firestore
+      .collection(GROUP_TRAININGS_COLLECTION)
+      .where('isActive', '==', true)
+      .get();
+    
+    const trainings = snapshot.docs
+      .map(doc => {
+        const data = doc.data();
+        // Преобразуем createdAt в Date, если это Timestamp
+        if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+          data.createdAt = data.createdAt.toDate();
+        } else if (data.createdAt && !(data.createdAt instanceof Date)) {
+          data.createdAt = new Date(data.createdAt);
+        }
+        return data as GroupTraining;
+      })
+      .filter(t => isOneTimeGroupStillVisible(t))
+      .sort((a, b) => {
+        // Сначала сортируем по уровню (по возрастанию)
+        const levelOrderA = groupTrainingLevelOrder[a.level] || 999;
+        const levelOrderB = groupTrainingLevelOrder[b.level] || 999;
+        
+        if (levelOrderA !== levelOrderB) {
+          return levelOrderA - levelOrderB;
+        }
+        
+        // Если уровни одинаковые, сортируем по дате создания (новые первыми)
+        const dateA = a.createdAt instanceof Date ? a.createdAt.getTime() : new Date(a.createdAt).getTime();
+        const dateB = b.createdAt instanceof Date ? b.createdAt.getTime() : new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+    
+    return trainings;
+  } catch (error) {
+    console.error('Ошибка получения всех активных групповых тренировок:', error);
+    return [];
+  }
+}
+
+/**
+ * Форматирует дату и время из формата "21.11 19:00" в "Пт 30.01 18:00-19:00"
+ * @param dateTimeStr - строка с датой и временем в формате "21.11 19:00"
+ * @param duration - длительность в часах (1, 1.5, 2)
+ */
+function formatGroupTrainingDateTime(dateTimeStr: string, duration?: number): string {
+  // Парсим формат "21.11 19:00" или "21.11 19:00-20:00"
+  const parts = dateTimeStr.trim().split(' ');
+  if (parts.length < 2) {
+    return dateTimeStr; // Возвращаем как есть, если формат не распознан
+  }
+  
+  const datePart = parts[0]; // "21.11"
+  const timePart = parts.slice(1).join(' '); // "19:00" или "19:00-20:00"
+  
+  const [day, month] = datePart.split('.');
+  if (!day || !month) {
+    return dateTimeStr;
+  }
+  
+  // Определяем год (текущий или следующий, если дата уже прошла)
+  const now = getMoscowTime();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1; // getMonth() возвращает 0-11
+  
+  let year = currentYear;
+  const monthNum = parseInt(month, 10);
+  const dayNum = parseInt(day, 10);
+  
+  // Если месяц уже прошел в этом году, или если это текущий месяц и день уже прошел
+  if (monthNum < currentMonth || (monthNum === currentMonth && dayNum < now.getDate())) {
+    year = currentYear + 1;
+  }
+  
+  // Создаем объект Date
+  const date = new Date(year, monthNum - 1, dayNum);
+  
+  // Получаем день недели
+  const weekDays = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+  const weekDay = weekDays[date.getDay()];
+  
+  // Форматируем дату как "30.01"
+  const formattedDate = `${day.padStart(2, '0')}.${month.padStart(2, '0')}`;
+  
+  // Обрабатываем время
+  let formattedTime = timePart;
+  // Если время указано как "19:00" и есть длительность, вычисляем время окончания
+  if (!timePart.includes('-')) {
+    const [hours, minutes] = timePart.split(':');
+    if (hours && minutes) {
+      const startHours = parseInt(hours, 10);
+      const startMinutes = parseInt(minutes, 10);
+      
+      // Используем длительность, если она указана, иначе предполагаем 1 час
+      const durationHours = duration || 1;
+      const endTime = new Date(year, monthNum - 1, dayNum, startHours, startMinutes);
+      endTime.setHours(endTime.getHours() + Math.floor(durationHours));
+      endTime.setMinutes(endTime.getMinutes() + Math.round((durationHours % 1) * 60));
+      
+      const endHours = endTime.getHours().toString().padStart(2, '0');
+      const endMinutes = endTime.getMinutes().toString().padStart(2, '0');
+      formattedTime = `${hours}:${minutes}-${endHours}:${endMinutes}`;
+    }
+  }
+  
+  return `<b>${weekDay} ${formattedDate}</b> ${formattedTime}`;
+}
+
+/**
+ * Форматирует описание группы для отображения
+ */
+function formatGroupTrainingDescription(training: GroupTraining, index: number): string {
+  const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
+  
+  // Имя тренера и название корта — как ввёл тренер, без ссылок
+  const trainerName = training.trainerName || 'Тренер';
+  const courtName = training.courtName;
+  
+  // Форматируем дату и время (для регулярных — следующее занятие)
+  const displayDateTime = getDisplayDateTime(training);
+  const formattedDateTime = formatGroupTrainingDateTime(displayDateTime, training.duration);
+  
+  // Формируем описание: имя тренера и название корта
+  let description = `${index}. <b>${trainerName}</b> — ${courtName}\n`;
+  description += `📅 ${formattedDateTime}\n`;
+  description += `🎾 ${levelLabel}\n`;
+  description += `💰 ${training.priceSingle}₽ за занятие\n\n`;
+  
+  return description;
+}
+
+/**
+ * Отображает страницу с групповыми тренировками
+ */
+async function showGroupTrainingsPage(
+  chatId: number,
+  trainings: GroupTraining[],
+  page: number,
+  messageId?: number
+): Promise<void> {
+  const GROUPS_PER_PAGE = 4;
+  const totalPages = Math.ceil(trainings.length / GROUPS_PER_PAGE);
+  const startIndex = (page - 1) * GROUPS_PER_PAGE;
+  const endIndex = startIndex + GROUPS_PER_PAGE;
+  const pageTrainings = trainings.slice(startIndex, endIndex);
+  
+  if (pageTrainings.length === 0) {
+    await getBot().sendMessage(chatId, 'Нет доступных групп на этой странице.');
+    return;
+  }
+  
+  let message = '<b>👥 Доступные групповые тренировки:</b>\n\n';
+  
+  // Форматируем описания групп (имя тренера уже сохранено в training.trainerName)
+  for (let i = 0; i < pageTrainings.length; i++) {
+    const training = pageTrainings[i];
+    const globalIndex = startIndex + i + 1;
+    message += formatGroupTrainingDescription(training, globalIndex);
+  }
+  
+  // Добавляем подсказку внизу
+  message += '<i>Если группа подходит — нажмите номер снизу, и мы покажем контакт тренера👇</i>';
+  
+  // Формируем клавиатуру
+  const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+  
+  // Кнопки выбора группы (с глобальной нумерацией: 1-4 на первой странице, 5-8 на второй и т.д.)
+  const groupButtons: TelegramBot.InlineKeyboardButton[] = [];
+  for (let i = 0; i < pageTrainings.length; i++) {
+    const globalIndex = startIndex + i + 1;
+    groupButtons.push({
+      text: `${globalIndex}`,
+      callback_data: `group_select_${pageTrainings[i].id}`
+    });
+  }
+  if (groupButtons.length > 0) {
+    keyboard.push(groupButtons);
+  }
+  
+  // Кнопки навигации (как при поиске кортов)
+  if (totalPages > 1) {
+    const paginationRow: TelegramBot.InlineKeyboardButton[] = [];
+    
+    if (page > 1) {
+      paginationRow.push({ text: '◀️ Назад', callback_data: `group_trainings_page_${page - 1}` });
+    }
+    
+    paginationRow.push({ text: `${page}/${totalPages}`, callback_data: 'group_trainings_page_info' });
+    
+    if (page < totalPages) {
+      paginationRow.push({ text: 'Вперед ▶️', callback_data: `group_trainings_page_${page + 1}` });
+    }
+    
+    keyboard.push(paginationRow);
+  }
+  
+  const replyMarkup: TelegramBot.InlineKeyboardMarkup = {
+    inline_keyboard: keyboard
+  };
+  
+  if (messageId) {
+    await safeEditMessageText(message, {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: replyMarkup
+    });
+  } else {
+    await getBot().sendMessage(chatId, message, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: replyMarkup
+    });
   }
 }
 
@@ -575,6 +929,8 @@ interface CoachSearchState {
   currentIndex: number;  // Текущий индекс в списке
   trainingType: 'individual' | 'group' | 'any';  // Тип тренировки
   fromMainMenu?: boolean;  // Флаг: запрос пришел из главного меню
+  fromGroupTraining?: boolean;  // Просмотр профиля тренера из деталей групповой тренировки
+  fromGroupTrainingTrainingId?: string;  // ID тренировки для кнопки «Назад» к выбранной группе
 }
 
 // Информация о заявке для отслеживания
@@ -597,6 +953,155 @@ const coachSearchStates = new Map<number, CoachSearchState>();
 // Хранилище для отслеживания текущего шага редактирования профиля
 const coachEditStates = new Map<number, CoachEditStep>();
 
+// Шаги создания групповой тренировки
+enum GroupTrainingStep {
+  NONE = 'none',
+  TRAINER_NAME = 'trainer_name',
+  COURT_NAME = 'court_name',
+  DATE_TIME = 'date_time',
+  IS_RECURRING = 'is_recurring',
+  DURATION = 'duration',
+  LEVEL = 'level',
+  PRICE_SINGLE = 'price_single',
+  CONTACT = 'contact'
+}
+
+// Хранилище для отслеживания текущего шага создания групповой тренировки
+const groupTrainingStates = new Map<number, GroupTrainingStep>();
+
+// Временное хранилище данных групповой тренировки во время создания
+interface GroupTrainingDraft {
+  trainerName?: string;
+  courtName?: string;
+  dateTime?: string;
+  isRecurring?: boolean; // true = регулярное место, false = разовое занятие
+  duration?: number; // Длительность в часах (1, 1.5, 2)
+  level?: string;
+  priceSingle?: number;
+  contact?: string;
+}
+
+const groupTrainingDrafts = new Map<number, GroupTrainingDraft>();
+
+/**
+ * Определяет общее количество шагов в зависимости от того, нужно ли спрашивать имя тренера и контакт
+ */
+function getTotalGroupTrainingSteps(skipTrainerName: boolean, skipContact: boolean): number {
+  let total = 8;
+  if (skipTrainerName) total--;
+  if (skipContact) total--;
+  return total;
+}
+
+/**
+ * Вычисляет текущий номер шага на основе текущего шага и того, пропускаются ли шаги имени и контакта
+ */
+function getCurrentStepNumber(currentStep: GroupTrainingStep, skipTrainerName: boolean, skipContact: boolean): number {
+  const stepOrder = [
+    GroupTrainingStep.TRAINER_NAME,
+    GroupTrainingStep.COURT_NAME,
+    GroupTrainingStep.DATE_TIME,
+    GroupTrainingStep.IS_RECURRING,
+    GroupTrainingStep.DURATION,
+    GroupTrainingStep.LEVEL,
+    GroupTrainingStep.PRICE_SINGLE,
+    GroupTrainingStep.CONTACT
+  ];
+  
+  const stepIndex = stepOrder.indexOf(currentStep);
+  if (stepIndex === -1) return 1;
+  
+  let currentStepNum = stepIndex + 1;
+  
+  // Если пропускаем шаг имени, сдвигаем все последующие шаги на -1
+  if (skipTrainerName && stepIndex > 0) {
+    currentStepNum--;
+  }
+  
+  // Если пропускаем шаг контакта, сдвигаем все последующие шаги на -1
+  if (skipContact && stepIndex > stepOrder.indexOf(GroupTrainingStep.PRICE_SINGLE)) {
+    currentStepNum--;
+  }
+  
+  return currentStepNum;
+}
+
+/**
+ * Получает все тренировки пользователя (включая неактивные) для определения имени и контакта
+ */
+async function getAllUserGroupTrainings(userId: number): Promise<GroupTraining[]> {
+  try {
+    // Получаем все тренировки пользователя (включая неактивные)
+    const snapshot = await firestore
+      .collection(GROUP_TRAININGS_COLLECTION)
+      .where('userId', '==', userId)
+      .get();
+    
+    // Преобразуем и сортируем в коде
+    const trainings = snapshot.docs
+      .map(doc => {
+        const data = doc.data();
+        // Преобразуем createdAt в Date, если это Timestamp
+        if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+          data.createdAt = data.createdAt.toDate();
+        } else if (data.createdAt && !(data.createdAt instanceof Date)) {
+          data.createdAt = new Date(data.createdAt);
+        }
+        return data as GroupTraining;
+      })
+      .sort((a, b) => {
+        // Сортируем по дате создания (новые первыми)
+        const dateA = a.createdAt instanceof Date ? a.createdAt.getTime() : new Date(a.createdAt).getTime();
+        const dateB = b.createdAt instanceof Date ? b.createdAt.getTime() : new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+    
+    return trainings;
+  } catch (error) {
+    console.error(`Ошибка получения всех групповых тренировок для пользователя ${userId}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Определяет, какие шаги можно пропустить, на основе профиля тренера и последней тренировки
+ */
+async function getGroupTrainingSkipFlags(userId: number): Promise<{ skipTrainerName: boolean; skipContact: boolean; trainerName?: string; trainerContact?: string }> {
+  const userProfile = await getUserProfile(userId);
+  // Получаем все тренировки (включая неактивные), чтобы найти имя и контакт даже из отмененных
+  const allTrainings = await getAllUserGroupTrainings(userId);
+  const lastTraining = allTrainings.length > 0 ? allTrainings[0] : null;
+  
+  // Определяем имя: сначала из профиля, потом из последней тренировки
+  const trainerName = userProfile?.coachName || userProfile?.name || lastTraining?.trainerName;
+  
+  // Определяем контакт: сначала из профиля, потом из последней тренировки
+  const trainerContact = userProfile?.coachContact || lastTraining?.contact;
+  
+  return {
+    skipTrainerName: !!trainerName,
+    skipContact: !!trainerContact,
+    trainerName,
+    trainerContact
+  };
+}
+
+// Интерфейс для сохраненной групповой тренировки
+interface GroupTraining {
+  id: string; // Уникальный ID тренировки
+  userId: number; // ID создателя
+  trainerName: string; // Имя тренера
+  courtName: string;
+  dateTime: string; // Формат "21.11 19:00"
+  isRecurring?: boolean; // true = регулярное место, false = разовое (скрывается после даты)
+  duration: number; // Длительность в часах (1, 1.5, 2)
+  level: string;
+  priceSingle: number;
+  contact: string;
+  createdAt: Date;
+  isActive: boolean; // Активна ли тренировка (не отменена)
+}
+
 // Хранилище для накопления файлов из media group
 interface MediaGroupItem {
   fileId: string;
@@ -614,6 +1119,24 @@ interface MediaGroupBuffer {
 
 const mediaGroupBuffers = new Map<string, MediaGroupBuffer>();
 const MEDIA_GROUP_TIMEOUT = 2000; // 2 секунды на сбор всех файлов из группы
+
+// Маппинг уровней для групповых тренировок
+const groupTrainingLevelLabels: Record<string, string> = {
+  beginner: 'Начинающий 0-1',
+  beginner_plus: 'Начинающий+ 1.5-2',
+  intermediate: 'Средний 2.5-3',
+  advanced: 'Продвинутый 3-3.5',
+  advanced_plus: 'Продвинутый+ 4+'
+};
+
+// Маппинг уровней для сортировки (по возрастанию)
+const groupTrainingLevelOrder: Record<string, number> = {
+  beginner: 1,
+  beginner_plus: 2,
+  intermediate: 3,
+  advanced: 4,
+  advanced_plus: 5
+};
 
 /**
  * Обрабатывает файл из media group или одиночный файл
@@ -2440,6 +2963,10 @@ async function showCoachCard(
   // Формируем кнопки навигации
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
   
+  // Просмотр из деталей групповой тренировки: только кнопка «Назад» (сообщение с профилем отправляется новым, с фото)
+  if (searchState.fromGroupTraining && searchState.fromGroupTrainingTrainingId) {
+    buttons.push([{ text: '◀️ Назад', callback_data: `group_back_to_training_${searchState.fromGroupTrainingTrainingId}` }]);
+  } else {
   // Кнопка связи с тренером
   buttons.push([{ text: '📩 Связаться с тренером', callback_data: `coach_request_${coachUserId}` }]);
   
@@ -2473,6 +3000,7 @@ async function showCoachCard(
     if (navRow.length > 0) {
       buttons.push(navRow);
     }
+  }
   }
   
   const keyboard = { inline_keyboard: buttons };
@@ -2722,8 +3250,11 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   // Проверяем команды
   if (text === '/start') {
-    // Отслеживаем команду /start
+    // При выходе на главную сбрасываем незавершённые флоу (создание группы, регистрация тренера)
     if (userId) {
+      coachRegistrationStates.delete(userId);
+      groupTrainingStates.delete(userId);
+      groupTrainingDrafts.delete(userId);
       trackButtonClick({
         userId,
         userName: msg.from?.first_name || msg.from?.username || undefined,
@@ -3090,6 +3621,287 @@ async function handleMessage(msg: TelegramBot.Message) {
       return;
     }
   }
+
+  // Обработка шагов создания групповой тренировки
+  if (userId && text) {
+    const currentStep = groupTrainingStates.get(userId);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|⚙️|💬)/);
+    
+    // Шаг 1: Имя тренера (только если нет профиля тренера)
+    if (isNotCommand && currentStep === GroupTrainingStep.TRAINER_NAME) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      draft.trainerName = text.trim();
+      groupTrainingDrafts.set(userId, draft);
+      
+      // Шаг 2: Название корта
+      groupTrainingStates.set(userId, GroupTrainingStep.COURT_NAME);
+      const skipTrainerName = false; // Мы только что ввели имя, значит шаг не пропускался
+      // Проверяем контакт (может быть в профиле или последней тренировке)
+      const skipFlags = await getGroupTrainingSkipFlags(userId);
+      const skipContact = skipFlags.skipContact;
+      const totalSteps = getTotalGroupTrainingSteps(skipTrainerName, skipContact);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.COURT_NAME, skipTrainerName, skipContact);
+      await getBot().sendMessage(chatId, 
+        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nГде проходит тренировка? Напишите название корта (пример - Спартак, крытый хард)`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            remove_keyboard: true
+          }
+        }
+      );
+      return;
+    }
+    
+    // Шаг 2: Название корта
+    if (isNotCommand && currentStep === GroupTrainingStep.COURT_NAME) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      draft.courtName = text.trim();
+      groupTrainingDrafts.set(userId, draft);
+      
+      // Проверяем, был ли пропущен шаг имени и есть ли контакт
+      const skipFlags = await getGroupTrainingSkipFlags(userId);
+      const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+      
+      // Шаг 3: Дата/время
+      groupTrainingStates.set(userId, GroupTrainingStep.DATE_TIME);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.DATE_TIME, skipFlags.skipTrainerName, skipFlags.skipContact);
+      await getBot().sendMessage(chatId, 
+        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nДата/время занятия (формат: "21.11 19:00"):`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            remove_keyboard: true
+          }
+        }
+      );
+      return;
+    }
+    
+    // Шаг 3: Дата/время
+    if (isNotCommand && currentStep === GroupTrainingStep.DATE_TIME) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      // Простая валидация формата (можно улучшить)
+      const dateTimePattern = /^\d{1,2}\.\d{1,2}\s+\d{1,2}:\d{2}$/;
+      if (!dateTimePattern.test(text.trim())) {
+        await getBot().sendMessage(chatId, 
+          'Неверный формат. Введите дату и время в формате "21.11 19:00" (день.месяц час:минуты)',
+          {
+            parse_mode: 'HTML'
+          }
+        );
+        return;
+      }
+      
+      draft.dateTime = text.trim();
+      groupTrainingDrafts.set(userId, draft);
+      
+      // Проверяем, был ли пропущен шаг имени и есть ли контакт
+      const skipFlags = await getGroupTrainingSkipFlags(userId);
+      const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+      
+      // Шаг 4: Место в группе регулярное?
+      groupTrainingStates.set(userId, GroupTrainingStep.IS_RECURRING);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.IS_RECURRING, skipFlags.skipTrainerName, skipFlags.skipContact);
+      await getBot().sendMessage(chatId, 
+        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\n<b>Место в группе регулярное?</b>\n\nВыберите, как показывать вашу группу игрокам:\n\n` +
+        `✅ <b>Да, место регулярное</b>\nМы будем постоянно показывать эту группу пользователям, пока вы не отключите её в профиле.\n\n` +
+        `📅 <b>Нет, разовое занятие</b>\nГруппа будет отображаться пользователям до указанной даты, потом автоматически исчезнет.`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ Да', callback_data: 'group_training_recurring_yes' }],
+              [{ text: '📅 Нет', callback_data: 'group_training_recurring_no' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    // Шаг 5: Стоимость одного занятия
+    if (isNotCommand && currentStep === GroupTrainingStep.PRICE_SINGLE) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      const cleanText = text.trim();
+      
+      // Валидация числа
+      if (!/^\d+$/.test(cleanText)) {
+        await getBot().sendMessage(chatId, 
+          'Пожалуйста, введите только число (без пробелов, букв и дробных частей)'
+        );
+        return;
+      }
+      
+      const price = parseInt(cleanText, 10);
+      if (isNaN(price) || price < 0) {
+        await getBot().sendMessage(chatId, 
+          'Пожалуйста, введите корректную цену (положительное число)'
+        );
+        return;
+      }
+      
+      draft.priceSingle = price;
+      groupTrainingDrafts.set(userId, draft);
+      
+      // Проверяем, был ли пропущен шаг имени и есть ли контакт
+      const skipFlags = await getGroupTrainingSkipFlags(userId);
+      
+      // Если контакт есть (в профиле или последней тренировке), пропускаем шаг контакта и сразу сохраняем тренировку
+      if (skipFlags.skipContact && skipFlags.trainerContact) {
+        const draft = groupTrainingDrafts.get(userId) || {};
+        draft.contact = skipFlags.trainerContact;
+        groupTrainingDrafts.set(userId, draft);
+        
+        // Сохраняем тренировку
+        const training: GroupTraining = {
+          id: `${userId}_${Date.now()}`,
+          userId: userId,
+          trainerName: draft.trainerName || msg.from?.first_name || 'Тренер',
+          courtName: draft.courtName!,
+          dateTime: draft.dateTime!,
+          isRecurring: draft.isRecurring ?? true,
+          duration: draft.duration || 1,
+          level: draft.level!,
+          priceSingle: draft.priceSingle!,
+          contact: draft.contact!,
+          createdAt: new Date(),
+          isActive: true
+        };
+        
+        await saveGroupTraining(training);
+        
+        // Очищаем состояние
+        groupTrainingStates.delete(userId);
+        groupTrainingDrafts.delete(userId);
+        
+        const userProfile = await getUserProfile(userId);
+        const isCoach = userProfile?.isCoach || false;
+        
+        // Формируем клавиатуру
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = [
+          [
+            { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
+            { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+          ]
+        ];
+        
+        if (!isCoach) {
+          keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+        }
+        
+        keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+        
+        // Формируем сообщение
+        let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
+        if (!isCoach) {
+          message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуную</b> или <b>сплит-тренировку</b>.';
+        }
+        
+        await getBot().sendMessage(chatId, message, {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: keyboard
+          }
+        });
+        return;
+      }
+      
+      // Если контакта нет, переходим к шагу контакта
+      const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+      groupTrainingStates.set(userId, GroupTrainingStep.CONTACT);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.CONTACT, skipFlags.skipTrainerName, skipFlags.skipContact);
+      const username = msg.from?.username;
+      
+      if (username) {
+        await getBot().sendMessage(chatId, 
+          `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nВаши контакты. Использовать @${username}?`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: `✅ Да, использовать @${username}`, callback_data: 'group_training_contact_use_username' }],
+                [{ text: '✏️ Ввести другой', callback_data: 'group_training_contact_custom' }]
+              ]
+            }
+          }
+        );
+      } else {
+        await getBot().sendMessage(chatId, 
+          `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nВведите ваши контакты (Telegram никнейм или телефон):`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              remove_keyboard: true
+            }
+          }
+        );
+      }
+      return;
+    }
+    
+    // Шаг 7: Контакт (если пользователь вводит вручную)
+    if (isNotCommand && currentStep === GroupTrainingStep.CONTACT) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      draft.contact = text.trim();
+      
+      // Сохраняем тренировку
+      const training: GroupTraining = {
+        id: `${userId}_${Date.now()}`,
+        userId: userId,
+        trainerName: draft.trainerName || msg.from?.first_name || 'Тренер',
+        courtName: draft.courtName!,
+        dateTime: draft.dateTime!,
+        isRecurring: draft.isRecurring ?? true,
+        duration: draft.duration || 1, // По умолчанию 1 час, если не указано
+        level: draft.level!,
+        priceSingle: draft.priceSingle!,
+        contact: draft.contact!,
+        createdAt: new Date(),
+        isActive: true
+      };
+      
+      await saveGroupTraining(training);
+      
+      // Очищаем состояние
+      groupTrainingStates.delete(userId);
+      groupTrainingDrafts.delete(userId);
+      
+      // Проверяем, есть ли у пользователя профиль тренера
+      const userProfile = await getUserProfile(userId);
+      const isCoach = userProfile?.isCoach || false;
+      
+      // Формируем клавиатуру
+      const keyboard: TelegramBot.InlineKeyboardButton[][] = [
+        [
+          { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
+          { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+        ]
+      ];
+      
+      // Добавляем кнопку регистрации тренера только если профиля еще нет
+      if (!isCoach) {
+        keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+      }
+      
+      keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+      
+      // Формируем сообщение
+      let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
+      if (!isCoach) {
+        message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуную</b> или <b>сплит-тренировку</b>.';
+      }
+      
+      // Отправляем финальное сообщение
+      await getBot().sendMessage(chatId, message, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: keyboard
+        }
+      });
+      return;
+    }
+  }
   
   /**
    * Определяет, является ли документ видео по MIME type или расширению
@@ -3404,6 +4216,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       // Сбрасываем состояние заполнения анкеты тренера
       if (userId) {
         coachRegistrationStates.delete(userId);
+        groupTrainingStates.delete(userId);
+        groupTrainingDrafts.delete(userId);
       }
       
       // Отслеживаем клик на текстовую кнопку
@@ -3437,6 +4251,8 @@ async function handleMessage(msg: TelegramBot.Message) {
         reply_markup: {
           inline_keyboard: [
             [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
+            [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
+            [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
             [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
             [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
             [{ text: '◀️ Назад', callback_data: 'action_home' }],
@@ -3491,6 +4307,56 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
       break;
+    case '👥 Найти группу':
+      // Сбрасываем состояние заполнения анкеты тренера
+      if (userId) {
+        coachRegistrationStates.delete(userId);
+        groupTrainingStates.delete(userId);
+        groupTrainingDrafts.delete(userId);
+      }
+      
+      // Отслеживаем клик на текстовую кнопку
+      if (userId) {
+        trackButtonClick({
+          userId,
+          userName: msg.from?.first_name || msg.from?.username || undefined,
+          chatId,
+          buttonType: 'text',
+          buttonId: text,
+          buttonLabel: text,
+          sessionId: generateSessionId(userId),
+          context: {
+            command: 'find_group',
+            username: msg.from?.username,
+            languageCode: msg.from?.language_code,
+          },
+        }).catch(err => {
+          console.error('Error tracking button click:', err);
+        });
+      }
+      
+      // Получаем все активные групповые тренировки
+      const allTrainings = await getAllActiveGroupTrainings();
+      
+      if (allTrainings.length === 0) {
+        await getBot().sendMessage(chatId, 
+          'К сожалению, сейчас нет активных групповых тренировок.\n\nПопробуйте позже или создайте свою группу!',
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
+                [{ text: '◀️ Назад', callback_data: 'action_home' }]
+              ]
+            }
+          }
+        );
+        return;
+      }
+      
+      // Отображаем первую страницу
+      await showGroupTrainingsPage(chatId, allTrainings, 1);
+      break;
+      
     case '👤 Найти тренера':
       // Сбрасываем состояние заполнения анкеты тренера
       if (userId) {
@@ -3607,8 +4473,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   // Это важно, чтобы избежать ошибки "query is too old"
   await safeAnswerCallbackQuery(query.id);
 
-  // Отслеживаем клик на кнопку (не блокируем выполнение)
-  if (data) {
+  // Отслеживаем клик на кнопку (не блокируем выполнение). group_select_* логируется в своём обработчике с доп. полем data.
+  if (data && !data.startsWith('group_select_')) {
     const buttonInfo = parseButtonType(data);
     const buttonLabel = query.message?.reply_markup?.inline_keyboard
       ?.flat()
@@ -5035,7 +5901,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   }
 
   // Обработка кнопки "Я тренер"
-  if (data === 'profile_toggle_coach') {
+  if (data === 'profile_toggle_coach' || data === 'profile_toggle_coach_from_group') {
     // Сбрасываем состояние заполнения анкеты тренера (если было начато ранее)
     coachRegistrationStates.delete(userId);
     
@@ -5044,6 +5910,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       `Вы сможете принимать запросы на: <b>индивидуальные / сплит / групповые занятия.</b>\n\n` +
       `✅ Заполните короткую анкету (≈2 минуты), и мы добавим вас в каталог тренеров.\n\n` +
       `Нажмите "Заполнить анкету", чтобы начать регистрацию.`;
+    
+    // Определяем callback_data для кнопки "Назад" в зависимости от источника
+    const backCallbackData = data === 'profile_toggle_coach_from_group' ? 'group_training_success_back' : 'profile_back';
     
     await safeEditMessageText(
       coachMessage,
@@ -5054,11 +5923,52 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         reply_markup: {
           inline_keyboard: [
             [{ text: '✅ Заполнить анкету', callback_data: 'coach_register' }],
-            [{ text: '⬅️ Назад', callback_data: 'profile_back' }]
+            [{ text: '⬅️ Назад', callback_data: backCallbackData }]
           ]
         }
       }
     );
+    return;
+  }
+
+  // Обработка возврата к сообщению об успешном добавлении группы
+  if (data === 'group_training_success_back') {
+    const userProfile = await getUserProfile(userId);
+    const isCoach = userProfile?.isCoach || false;
+    
+    // Формируем клавиатуру
+    const keyboard: TelegramBot.InlineKeyboardButton[][] = [
+      [
+        { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
+        { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+      ]
+    ];
+    
+    if (!isCoach) {
+      keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+    }
+    
+    keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+    
+    // Формируем сообщение
+    let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
+    if (!isCoach) {
+      message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуную</b> или <b>сплит-тренировку</b>.';
+    }
+    
+    await safeEditMessageText(
+      message,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: keyboard
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
     return;
   }
 
@@ -6617,10 +7527,618 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // Обработка пагинации списка групповых тренировок
+  if (data?.startsWith('group_trainings_page_')) {
+    // Игнорируем клик на кнопку "group_trainings_page_info" (информация о странице)
+    if (data === 'group_trainings_page_info') {
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    
+    const page = parseInt(data.replace('group_trainings_page_', ''), 10);
+    const allTrainings = await getAllActiveGroupTrainings();
+    
+    if (allTrainings.length === 0) {
+      await safeEditMessageText(
+        'К сожалению, сейчас нет активных групповых тренировок.',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '◀️ Назад', callback_data: 'action_home' }]
+            ]
+          }
+        }
+      );
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    
+    await showGroupTrainingsPage(chatId, allTrainings, page, query.message?.message_id);
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка выбора группы
+  if (data?.startsWith('group_select_')) {
+    const trainingId = data.replace('group_select_', '');
+    
+    // Получаем тренировку из Firestore
+    const trainingDoc = await firestore.collection(GROUP_TRAININGS_COLLECTION).doc(trainingId).get();
+    
+    if (!trainingDoc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Группа не найдена' });
+      return;
+    }
+    
+    const training = trainingDoc.data() as GroupTraining;
+    const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
+    
+    // Логируем клик с тем же context, что и у остальных callback, плюс поле data (тренер)
+    const buttonInfo = parseButtonType(data);
+    const buttonLabel = query.message?.reply_markup?.inline_keyboard
+      ?.flat()
+      .find(btn => btn.callback_data === data)?.text;
+    trackButtonClick({
+      userId,
+      userName: query.from?.first_name || query.from?.username || undefined,
+      chatId,
+      buttonType: 'callback',
+      buttonId: data,
+      buttonLabel,
+      messageId: query.message?.message_id,
+      sessionId: generateSessionId(userId),
+      context: {
+        buttonType: buttonInfo.type,
+        buttonAction: buttonInfo.action,
+        username: query.from?.username,
+        languageCode: query.from?.language_code,
+        data: {
+          trainerId: training.userId,
+          trainerName: training.trainerName || 'Тренер',
+          trainerLogin: training.contact || undefined,
+        },
+      },
+    }).catch(err => {
+      console.error('Error tracking group_select click:', err);
+    });
+    
+    // Формируем сообщение с контактом
+    let contactMessage = `👥 <b>Групповая тренировка</b>\n\n`;
+    contactMessage += `<b>Тренер:</b> ${training.trainerName || 'Тренер'}\n`;
+    contactMessage += `<b>Корт:</b> ${training.courtName}\n`;
+    contactMessage += `<b>Дата/время:</b> ${getDisplayDateTime(training)}\n`;
+    contactMessage += `<b>Уровень:</b> ${levelLabel}\n`;
+    contactMessage += `<b>Цена:</b> ${training.priceSingle}₽ за занятие\n\n`;
+    contactMessage += `<b>Контакт тренера:</b> ${training.contact}`;
+    
+    // Проверяем, есть ли у тренера профиль в боте
+    const trainerProfile = await getUserProfile(training.userId);
+    const hasCoachProfile = trainerProfile?.isCoach === true;
+    
+    const inlineKeyboard: TelegramBot.InlineKeyboardButton[][] = [
+      [{ text: '📩 Связаться со мной', callback_data: `group_contact_${trainingId}` }]
+    ];
+    if (hasCoachProfile) {
+      inlineKeyboard.push([{ text: '👤 Подробнее о тренере', callback_data: `group_show_coach_${trainingId}` }]);
+    }
+    inlineKeyboard.push([{ text: '◀️ Назад к списку', callback_data: 'group_trainings_page_1' }]);
+    
+    // Редактируем сообщение (список групп → детали тренировки), чтобы не плодить сообщения
+    await safeEditMessageText(contactMessage, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка кнопки "Подробнее о тренере" — показываем профиль тренера (редактируем то же сообщение)
+  if (data?.startsWith('group_show_coach_')) {
+    const trainingId = data.replace('group_show_coach_', '');
+    
+    const trainingDoc = await firestore.collection(GROUP_TRAININGS_COLLECTION).doc(trainingId).get();
+    if (!trainingDoc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Группа не найдена' });
+      return;
+    }
+    
+    const training = trainingDoc.data() as GroupTraining;
+    const coachProfile = await getUserProfile(training.userId);
+    if (!coachProfile?.isCoach) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Профиль тренера недоступен' });
+      return;
+    }
+    
+    const searchState: CoachSearchState = {
+      coachIds: [String(training.userId)],
+      currentIndex: 0,
+      trainingType: 'any',
+      fromGroupTraining: true,
+      fromGroupTrainingTrainingId: trainingId
+    };
+    
+    // Отправляем новое сообщение с полным профилем (включая фото), не редактируем сообщение с деталями группы
+    await showCoachCard(chatId, userId, searchState, undefined);
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка кнопки «Назад» из профиля тренера — удаляем сообщение с профилем, остаётся сообщение с деталями группы
+  if (data?.startsWith('group_back_to_training_')) {
+    const messageId = query.message?.message_id;
+    if (messageId) {
+      try {
+        await getBot().deleteMessage(chatId, messageId);
+      } catch (e) {
+        // игнорируем ошибку удаления
+      }
+    }
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка кнопки "Связаться со мной"
+  if (data?.startsWith('group_contact_')) {
+    const trainingId = data.replace('group_contact_', '');
+    
+    // Получаем тренировку из Firestore
+    const trainingDoc = await firestore.collection(GROUP_TRAININGS_COLLECTION).doc(trainingId).get();
+    
+    if (!trainingDoc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Группа не найдена' });
+      return;
+    }
+    
+    const training = trainingDoc.data() as GroupTraining;
+    const trainerUserId = training.userId;
+    const playerUserId = userId;
+    const playerName = query.from.first_name || query.from.username || 'Игрок';
+    const playerUsername = query.from.username;
+    
+    // Отправляем уведомление тренеру
+    const trainerName = training.trainerName || 'Тренер';
+    const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
+    const notificationMessage = `👥 <b>Новая заявка на групповую тренировку!</b>\n\n` +
+      `<b>Игрок:</b> ${playerName}${playerUsername ? ` (@${playerUsername})` : ''}\n` +
+      `<b>Группа:</b> ${training.courtName}\n` +
+      `<b>Уровень:</b> ${levelLabel}\n` +
+      `<b>Дата/время:</b> ${getDisplayDateTime(training)}\n\n` +
+      `Хочет присоединиться к вашей группе. Свяжитесь с игроком:`;
+    
+    try {
+      // Формируем ссылку на пользователя
+      let userLink: string;
+      if (playerUsername) {
+        userLink = `https://t.me/${playerUsername}`;
+      } else {
+        // Если нет username, используем user_id для создания ссылки
+        // Telegram позволяет использовать tg://user?id=USER_ID
+        userLink = `tg://user?id=${playerUserId}`;
+      }
+      
+      await getBot().sendMessage(trainerUserId, notificationMessage, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `💬 Написать игроку`, url: userLink }]
+          ]
+        }
+      });
+      
+      // Уведомляем игрока
+      await getBot().sendMessage(chatId, 
+        `✅ Ваша заявка отправлена тренеру ${trainerName}!\n\nОн свяжется с вами в ближайшее время.`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '◀️ Назад к списку', callback_data: 'group_trainings_page_1' }]
+            ]
+          }
+        }
+      );
+      
+      await safeAnswerCallbackQuery(query.id, { text: 'Заявка отправлена!' });
+    } catch (error) {
+      console.error('Ошибка отправки уведомления тренеру:', error);
+      await safeAnswerCallbackQuery(query.id, { text: 'Ошибка отправки заявки' });
+    }
+    
+    return;
+  }
+
+  // Обработка создания групповой тренировки
+  if (data === 'group_training_create') {
+    // Сбрасываем предыдущее состояние
+    groupTrainingStates.delete(userId);
+    groupTrainingDrafts.delete(userId);
+    
+    // Проверяем, есть ли у пользователя профиль тренера
+    const userProfile = await getUserProfile(userId);
+    const isCoach = userProfile?.isCoach || false;
+    
+    // Используем функцию для определения пропускаемых шагов (она учитывает все тренировки, включая неактивные)
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const trainerName = skipFlags.trainerName;
+    const trainerContact = skipFlags.trainerContact;
+    
+    // Отправляем вводное сообщение
+    await getBot().sendMessage(chatId, 
+      '🎾 <b>Расскажите о своей группе</b>\n' +
+      'Мы предложим её всем пользователям бота — это займёт <b>≈ 1 минуту.</b>\n\n' +
+      '👇 Заполните информацию о группе ниже.\n\n' +
+      '⚠️ <b>Важно:</b> если группа наберётся или станет неактуальной — не забудьте <b>отменить её в разделе «Мои тренировки».</b>',
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          remove_keyboard: true
+        }
+      }
+    );
+    
+    // Определяем, какие шаги можно пропустить (используем данные из skipFlags)
+    const skipTrainerName = skipFlags.skipTrainerName;
+    const skipContact = skipFlags.skipContact;
+    const totalSteps = getTotalGroupTrainingSteps(skipTrainerName, skipContact);
+    
+    if (skipTrainerName) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      draft.trainerName = trainerName;
+      if (skipContact && trainerContact) {
+        draft.contact = trainerContact;
+      }
+      groupTrainingDrafts.set(userId, draft);
+      
+      // Переходим сразу к шагу 2: Название корта
+      groupTrainingStates.set(userId, GroupTrainingStep.COURT_NAME);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.COURT_NAME, skipTrainerName, skipContact);
+      await getBot().sendMessage(chatId, 
+        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nГде проходит тренировка? Напишите название корта (пример - Спартак, крытый хард)`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            remove_keyboard: true
+          }
+        }
+      );
+    } else {
+      // Шаг 1: Имя тренера
+      groupTrainingStates.set(userId, GroupTrainingStep.TRAINER_NAME);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.TRAINER_NAME, skipTrainerName, skipContact);
+      await getBot().sendMessage(chatId, 
+        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nКак к вам обращаться? (Ваше имя)`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            remove_keyboard: true
+          }
+        }
+      );
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка списка групповых тренировок
+  if (data === 'group_training_list') {
+    const trainings = await getUserGroupTrainings(userId);
+    
+    if (trainings.length === 0) {
+      await safeEditMessageText(
+        'У вас пока нет активных групповых тренировок.',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '👥 Создать тренировку', callback_data: 'group_training_create' }],
+              [{ text: '◀️ Назад', callback_data: 'action_home' }]
+            ]
+          }
+        }
+      );
+    } else {
+      let message = '📋 <b>Мои тренировки:</b>\n\n';
+      
+      trainings.forEach((training, index) => {
+        const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
+        message += `${index + 1}. <b>${training.courtName}</b>\n`;
+        message += `   📅 ${getDisplayDateTime(training)}\n`;
+        message += `   🎾 Уровень: ${levelLabel}\n`;
+        message += `   💰 ${training.priceSingle}₽ за занятие\n`;
+        message += `   📱 ${training.contact}\n\n`;
+      });
+      
+      const keyboard: TelegramBot.InlineKeyboardButton[][] = trainings.map((training, index) => [
+        { text: `❌ Отменить "${training.courtName}"`, callback_data: `group_training_cancel_${training.id}` }
+      ]);
+      
+      keyboard.push([{ text: '👥 Создать новую', callback_data: 'group_training_create' }]);
+      keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+      
+      await safeEditMessageText(
+        message,
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: keyboard
+          }
+        }
+      );
+    }
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка отмены групповой тренировки
+  if (data?.startsWith('group_training_cancel_')) {
+    const trainingId = data.replace('group_training_cancel_', '');
+    const success = await cancelGroupTraining(trainingId);
+    
+    if (success) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Тренировка отменена' });
+      
+      // Обновляем список тренировок
+      const trainings = await getUserGroupTrainings(userId);
+      
+      if (trainings.length === 0) {
+        await safeEditMessageText(
+          'У вас пока нет активных групповых тренировок.',
+          {
+            chat_id: chatId,
+            message_id: query.message?.message_id,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '👥 Создать тренировку', callback_data: 'group_training_create' }],
+                [{ text: '◀️ Назад', callback_data: 'action_home' }]
+              ]
+            }
+          }
+        );
+      } else {
+        let message = '📋 <b>Мои тренировки:</b>\n\n';
+        
+        trainings.forEach((training, index) => {
+          const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
+          message += `${index + 1}. <b>${training.courtName}</b>\n`;
+          message += `   📅 ${getDisplayDateTime(training)}\n`;
+          message += `   🎾 Уровень: ${levelLabel}\n`;
+          message += `   💰 ${training.priceSingle}₽ за занятие\n`;
+          message += `   📱 ${training.contact}\n\n`;
+        });
+        
+        const keyboard: TelegramBot.InlineKeyboardButton[][] = trainings.map((training) => [
+          { text: `❌ Отменить "${training.courtName}"`, callback_data: `group_training_cancel_${training.id}` }
+        ]);
+        
+        keyboard.push([{ text: '👥 Создать новую', callback_data: 'group_training_create' }]);
+        keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+        
+        await safeEditMessageText(
+          message,
+          {
+            chat_id: chatId,
+            message_id: query.message?.message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: keyboard
+            }
+          }
+        );
+      }
+    } else {
+      await safeAnswerCallbackQuery(query.id, { text: 'Ошибка при отмене тренировки' });
+    }
+    return;
+  }
+
+  // Обработка выбора уровня
+  if (data?.startsWith('group_training_level_')) {
+    const level = data.replace('group_training_level_', '');
+    const draft = groupTrainingDrafts.get(userId) || {};
+    draft.level = level;
+    groupTrainingDrafts.set(userId, draft);
+    
+    // Проверяем, был ли пропущен шаг имени и есть ли контакт
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+    
+    // Переходим к шагу стоимости одного занятия
+    groupTrainingStates.set(userId, GroupTrainingStep.PRICE_SINGLE);
+    const currentStepNum = getCurrentStepNumber(GroupTrainingStep.PRICE_SINGLE, skipFlags.skipTrainerName, skipFlags.skipContact);
+    
+    await getBot().sendMessage(chatId, 
+      `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nВведите стоимость 1 занятия для 1 человека (например: 1000):`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          remove_keyboard: true
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка выбора «Место в группе регулярное?» — Да / Нет
+  if (data === 'group_training_recurring_yes' || data === 'group_training_recurring_no') {
+    const draft = groupTrainingDrafts.get(userId) || {};
+    draft.isRecurring = data === 'group_training_recurring_yes';
+    groupTrainingDrafts.set(userId, draft);
+    
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+    
+    groupTrainingStates.set(userId, GroupTrainingStep.DURATION);
+    const currentStepNum = getCurrentStepNumber(GroupTrainingStep.DURATION, skipFlags.skipTrainerName, skipFlags.skipContact);
+    await getBot().sendMessage(chatId, 
+      `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nВыберите длительность тренировки:`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '1 час', callback_data: 'group_training_duration_1' }],
+            [{ text: '1.5 часа', callback_data: 'group_training_duration_1.5' }],
+            [{ text: '2 часа', callback_data: 'group_training_duration_2' }]
+          ]
+        }
+      }
+    );
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка выбора длительности тренировки
+  if (data?.startsWith('group_training_duration_')) {
+    const durationStr = data.replace('group_training_duration_', '');
+    const duration = parseFloat(durationStr);
+    
+    if (isNaN(duration) || ![1, 1.5, 2].includes(duration)) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Неверная длительность' });
+      return;
+    }
+    
+    const draft = groupTrainingDrafts.get(userId) || {};
+    draft.duration = duration;
+    groupTrainingDrafts.set(userId, draft);
+    
+    // Проверяем, был ли пропущен шаг имени и есть ли контакт
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+    
+    // Переходим к шагу уровня
+    groupTrainingStates.set(userId, GroupTrainingStep.LEVEL);
+    const currentStepNum = getCurrentStepNumber(GroupTrainingStep.LEVEL, skipFlags.skipTrainerName, skipFlags.skipContact);
+    
+    await getBot().sendMessage(chatId, 
+      `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nВыберите уровень:`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Начинающий 0-1', callback_data: 'group_training_level_beginner' }],
+            [{ text: 'Начинающий+ 1.5-2', callback_data: 'group_training_level_beginner_plus' }],
+            [{ text: 'Средний 2.5-3', callback_data: 'group_training_level_intermediate' }],
+            [{ text: 'Продвинутый 3-3.5', callback_data: 'group_training_level_advanced' }],
+            [{ text: 'Продвинутый+ 4+', callback_data: 'group_training_level_advanced_plus' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка использования username для контакта
+  if (data === 'group_training_contact_use_username') {
+    const username = query.from?.username;
+    if (!username) {
+      await safeAnswerCallbackQuery(query.id, { text: 'У вас нет username в Telegram' });
+      return;
+    }
+    
+    const draft = groupTrainingDrafts.get(userId) || {};
+    draft.contact = `@${username}`;
+    
+    // Сохраняем тренировку
+    const training: GroupTraining = {
+      id: `${userId}_${Date.now()}`,
+      userId: userId,
+      trainerName: draft.trainerName || query.from?.first_name || 'Тренер',
+      courtName: draft.courtName!,
+      dateTime: draft.dateTime!,
+      isRecurring: draft.isRecurring ?? true,
+      duration: draft.duration || 1, // По умолчанию 1 час, если не указано
+      level: draft.level!,
+      priceSingle: draft.priceSingle!,
+      contact: draft.contact!,
+      createdAt: new Date(),
+      isActive: true
+    };
+    
+    await saveGroupTraining(training);
+    
+    // Очищаем состояние
+    groupTrainingStates.delete(userId);
+    groupTrainingDrafts.delete(userId);
+    
+    // Проверяем, есть ли у пользователя профиль тренера
+    const userProfile = await getUserProfile(userId);
+    const isCoach = userProfile?.isCoach || false;
+    
+    // Формируем клавиатуру
+    const keyboard: TelegramBot.InlineKeyboardButton[][] = [
+      [
+        { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
+        { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+      ]
+    ];
+    
+    // Добавляем кнопку регистрации тренера только если профиля еще нет
+    if (!isCoach) {
+      keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+    }
+    
+    keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+    
+    // Формируем сообщение
+    let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
+    if (!isCoach) {
+      message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуальную</b> или <b>сплит-тренировку</b>.';
+    }
+    
+    // Отправляем финальное сообщение
+    await getBot().sendMessage(chatId, message, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: keyboard
+      }
+    });
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка ввода другого контакта
+  if (data === 'group_training_contact_custom') {
+    // Проверяем, был ли пропущен шаг имени (контакт точно не пропускается, раз мы здесь)
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const skipContact = false; // Мы здесь, значит контакт не пропускается
+    const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipContact);
+    
+    groupTrainingStates.set(userId, GroupTrainingStep.CONTACT);
+    const currentStepNum = getCurrentStepNumber(GroupTrainingStep.CONTACT, skipFlags.skipTrainerName, skipContact);
+    await getBot().sendMessage(chatId, 
+      `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nВведите ваши контакты (Telegram никнейм или телефон):`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          remove_keyboard: true
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
   // Кнопка "Вернуться на главную"
   if (data === 'action_home') {
     // Сбрасываем состояние заполнения анкеты тренера
     coachRegistrationStates.delete(userId);
+    // Сбрасываем состояние создания групповой тренировки
+    groupTrainingStates.delete(userId);
+    groupTrainingDrafts.delete(userId);
     
     const profile = await getUserProfile(userId);
     const userName = profile?.name || query.from.first_name;
