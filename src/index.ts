@@ -911,7 +911,7 @@ async function getActiveCoaches(
     console.log(`[getActiveCoaches] Found ${coaches.length} coaches`);
     
     // Перемешиваем случайным образом
-    return coaches.sort(() => Math.random() - 0.5).slice(0, 5);
+    return coaches.sort(() => Math.random() - 0.5);
   } catch (error) {
     console.error('[getActiveCoaches] Error:', error);
     return [];
@@ -2448,8 +2448,8 @@ async function showCoachCard(
     buttons.push([{ text: '📸 Показать другие фото/видео', callback_data: `coach_show_media_${coachUserId}` }]);
   }
   
-  // Кнопка "Показать всех тренеров"
-  if (searchState.coachIds.length > 1) {
+  // Кнопка "Показать всех тренеров" (показываем только если тренеров больше 5)
+  if (searchState.coachIds.length > 5) {
     buttons.push([{ text: '👥 Показать всех тренеров', callback_data: 'coach_show_all' }]);
   }
   
@@ -6108,8 +6108,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Показать всех тренеров
-  if (data === 'coach_show_all') {
+  // Показать всех тренеров (с пагинацией)
+  if (data === 'coach_show_all' || (data && data.startsWith('coach_show_all_page_'))) {
     const searchState = coachSearchStates.get(userId);
     
     if (!searchState || searchState.coachIds.length === 0) {
@@ -6117,10 +6117,23 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     
-    // Формируем кнопки с именами и ценами тренеров
+    // Определяем номер страницы
+    let page = 0;
+    if (data && data.startsWith('coach_show_all_page_')) {
+      const pageStr = data.replace('coach_show_all_page_', '');
+      page = parseInt(pageStr) || 0;
+    }
+    
+    const pageSize = 5; // Количество тренеров на странице
+    const totalCoaches = searchState.coachIds.length;
+    const totalPages = Math.ceil(totalCoaches / pageSize);
+    const startIndex = page * pageSize;
+    const endIndex = Math.min(startIndex + pageSize, totalCoaches);
+    
+    // Формируем кнопки с именами и ценами тренеров для текущей страницы
     const buttons: TelegramBot.InlineKeyboardButton[][] = [];
     
-    for (let i = 0; i < searchState.coachIds.length; i++) {
+    for (let i = startIndex; i < endIndex; i++) {
       const coachUserId = searchState.coachIds[i];
       const coachProfile = await getUserProfile(parseInt(coachUserId));
       
@@ -6150,9 +6163,38 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       }
     }
     
+    // Добавляем кнопки навигации, если страниц больше одной
+    if (totalPages > 1) {
+      const navButtons: TelegramBot.InlineKeyboardButton[] = [];
+      
+      // Кнопка "Предыдущая страница"
+      if (page > 0) {
+        navButtons.push({ 
+          text: '◀️ Предыдущая', 
+          callback_data: `coach_show_all_page_${page - 1}` 
+        });
+      }
+      
+      // Кнопка "Следующая страница"
+      if (page < totalPages - 1) {
+        navButtons.push({ 
+          text: 'Следующая ▶️', 
+          callback_data: `coach_show_all_page_${page + 1}` 
+        });
+      }
+      
+      if (navButtons.length > 0) {
+        buttons.push(navButtons);
+      }
+    }
+    
     buttons.push([{ text: '🏠 На главную', callback_data: 'action_home' }]);
     
-    const message = `👥 <b>Список тренеров (всего ${searchState.coachIds.length})</b>`;
+    // Формируем сообщение с информацией о странице
+    let message = `👥 <b>Список тренеров (всего ${totalCoaches})</b>`;
+    if (totalPages > 1) {
+      message += `\n📄 Страница ${page + 1} из ${totalPages}`;
+    }
     const messageId = query.message?.message_id;
     
     // Редактируем существующее сообщение или отправляем новое
