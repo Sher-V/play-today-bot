@@ -28,6 +28,7 @@ import {
 } from './constants/padel-constants';
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
+import { isBannedUser } from './constants/banned-user-ids';
 import { getCourtPrice, getBotToken, isDev } from './utils/config-utils';
 import { getRemoteConfigValue } from './utils/remote-config';
 
@@ -3248,6 +3249,15 @@ async function handleMessage(msg: TelegramBot.Message) {
   const text = msg.text;
   const userId = msg.from?.id;
 
+  // Специальная заглушка для забаненных пользователей: на кнопки главного меню — сообщение «Упс»
+  if (userId && isBannedUser(userId) && text) {
+    const mainMenuTexts = ['🎾 Найти корт (теннис)', '👥 Найти группу', '👤 Найти тренера', '⚙️ Еще', '💬 Чат участников'];
+    if (mainMenuTexts.includes(text)) {
+      await getBot().sendMessage(chatId, 'Упс, что-то пошло не так 😌');
+      return;
+    }
+  }
+
   // Проверяем команды
   if (text === '/start') {
     // При выходе на главную сбрасываем незавершённые флоу (создание группы, регистрация тренера)
@@ -4460,6 +4470,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   const data = query.data;
 
   if (!chatId) return;
+
+  // Специальная заглушка для забаненных пользователей: на любой кнопке — сообщение «Упс»
+  if (isBannedUser(userId)) {
+    await safeAnswerCallbackQuery(query.id);
+    await getBot().sendMessage(chatId, 'Упс, что-то пошло не так 😌');
+    return;
+  }
 
   // Проверяем, не обрабатывали ли мы уже этот callback query
   if (processedQueries.has(query.id)) {
