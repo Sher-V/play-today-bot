@@ -4475,8 +4475,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   // Это важно, чтобы избежать ошибки "query is too old"
   await safeAnswerCallbackQuery(query.id);
 
-  // Отслеживаем клик на кнопку (не блокируем выполнение). group_select_* логируется в своём обработчике с доп. полем data.
-  if (data && !data.startsWith('group_select_')) {
+  // Отслеживаем клик на кнопку (не блокируем выполнение). group_select_* и coach_request_* логируются в своих обработчиках с доп. полем data.
+  if (data && !data.startsWith('group_select_') && !data.startsWith('coach_request_')) {
     const buttonInfo = parseButtonType(data);
     const buttonLabel = query.message?.reply_markup?.inline_keyboard
       ?.flat()
@@ -7168,6 +7168,39 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const coachUserId = data.replace('coach_request_', '');
     
     try {
+      // Получаем профиль тренера (нужен для контакта и для логирования)
+      const coachProfile = await getUserProfile(parseInt(coachUserId));
+      const coachName = coachProfile?.coachName || 'Тренер';
+      const coachUsername = coachProfile?.coachContact ?? undefined;
+
+      // Логируем клик «Связаться с тренером» с контекстом тренера в context.data
+      const buttonInfo = parseButtonType(data);
+      const buttonLabel = query.message?.reply_markup?.inline_keyboard
+        ?.flat()
+        .find(btn => btn.callback_data === data)?.text;
+      trackButtonClick({
+        userId,
+        userName: query.from?.first_name || query.from?.username || undefined,
+        chatId,
+        buttonType: 'callback',
+        buttonId: data,
+        buttonLabel,
+        messageId: query.message?.message_id,
+        sessionId: generateSessionId(userId),
+        context: {
+          buttonType: buttonInfo.type,
+          buttonAction: buttonInfo.action,
+          username: query.from?.username,
+          languageCode: query.from?.language_code,
+          data: {
+            coachUsername,
+            coachUserId: parseInt(coachUserId, 10),
+          },
+        },
+      }).catch(err => {
+        console.error('Error tracking coach_request button click:', err);
+      });
+
       // Получаем состояние поиска для определения типа тренировки
       const searchState = coachSearchStates.get(userId);
       const trainingType = searchState?.trainingType || 'any';
@@ -7178,10 +7211,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       const userUsername = query.from.username;
       const userLevel = userProfile?.level;
       const userDistricts = userProfile?.districts;
-      
-      // Получаем профиль тренера
-      const coachProfile = await getUserProfile(parseInt(coachUserId));
-      const coachName = coachProfile?.coachName || 'Тренер';
       
       // Определяем текст типа тренировки
       const trainingTypeLabels: Record<string, string> = {
