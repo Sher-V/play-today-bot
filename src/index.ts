@@ -636,6 +636,38 @@ async function getAllActiveGroupTrainings(): Promise<GroupTraining[]> {
 }
 
 /**
+ * Чередует групповые тренировки по тренерам: не показывать группы одного тренера подряд.
+ * Когда у нескольких тренеров ещё есть группы — по одной с каждого по кругу;
+ * когда остаётся только один тренер — его группы идут подряд в конце.
+ */
+function interleaveGroupTrainingsByTrainer(trainings: GroupTraining[]): GroupTraining[] {
+  if (trainings.length === 0) return [];
+  const byTrainer = new Map<number, GroupTraining[]>();
+  for (const t of trainings) {
+    const list = byTrainer.get(t.userId) ?? [];
+    list.push(t);
+    byTrainer.set(t.userId, list);
+  }
+  const result: GroupTraining[] = [];
+  const trainerIds = Array.from(byTrainer.keys());
+  const indices = trainerIds.map(() => 0);
+  for (;;) {
+    let added = false;
+    for (let i = 0; i < trainerIds.length; i++) {
+      const list = byTrainer.get(trainerIds[i])!;
+      const idx = indices[i];
+      if (idx < list.length) {
+        result.push(list[idx]);
+        indices[i] = idx + 1;
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
+  return result;
+}
+
+/**
  * Форматирует дату и время из формата "21.11 19:00" в "Пт 30.01 18:00-19:00"
  * @param dateTimeStr - строка с датой и временем в формате "21.11 19:00"
  * @param duration - длительность в часах (1, 1.5, 2)
@@ -720,7 +752,10 @@ function formatGroupTrainingDescription(training: GroupTraining, index: number):
   // Формируем описание: имя тренера и название корта
   let description = `${index}. <b>${trainerName}</b> — ${courtName}\n`;
   description += `📅 ${formattedDateTime}\n`;
-  description += training.groupSize ? `🎾 ${levelLabel}, ${training.groupSize} чел.\n` : `🎾 ${levelLabel}\n`;
+  description += `🎾 ${levelLabel}\n`;
+  if (training.groupSize) {
+    description += `👥 ${training.groupSize} чел.\n`;
+  }
   description += `💰 ${training.priceSingle}₽ за занятие\n\n`;
   
   return description;
@@ -735,7 +770,7 @@ async function showGroupTrainingsPage(
   page: number,
   messageId?: number
 ): Promise<void> {
-  const GROUPS_PER_PAGE = 4;
+  const GROUPS_PER_PAGE = 3;
   const totalPages = Math.ceil(trainings.length / GROUPS_PER_PAGE);
   const startIndex = (page - 1) * GROUPS_PER_PAGE;
   const endIndex = startIndex + GROUPS_PER_PAGE;
@@ -761,7 +796,7 @@ async function showGroupTrainingsPage(
   // Формируем клавиатуру
   const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
   
-  // Кнопки выбора группы (с глобальной нумерацией: 1-4 на первой странице, 5-8 на второй и т.д.)
+  // Кнопки выбора группы (с глобальной нумерацией: 1-3 на первой странице, 4-6 на второй и т.д.)
   const groupButtons: TelegramBot.InlineKeyboardButton[] = [];
   for (let i = 0; i < pageTrainings.length; i++) {
     const globalIndex = startIndex + i + 1;
@@ -790,6 +825,9 @@ async function showGroupTrainingsPage(
     
     keyboard.push(paginationRow);
   }
+  
+  // Кнопка в главное меню (аналогично /start)
+  keyboard.push([{ text: '🏠 В главное меню', callback_data: 'action_home' }]);
   
   const replyMarkup: TelegramBot.InlineKeyboardMarkup = {
     inline_keyboard: keyboard
@@ -4353,8 +4391,9 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      // Получаем все активные групповые тренировки
-      const allTrainings = await getAllActiveGroupTrainings();
+      // Получаем все активные групповые тренировки и чередуем по тренерам
+      const rawTrainings = await getAllActiveGroupTrainings();
+      const allTrainings = interleaveGroupTrainingsByTrainer(rawTrainings);
       
       if (allTrainings.length === 0) {
         await getBot().sendMessage(chatId, 
@@ -7591,7 +7630,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     }
     
     const page = parseInt(data.replace('group_trainings_page_', ''), 10);
-    const allTrainings = await getAllActiveGroupTrainings();
+    const rawTrainings = await getAllActiveGroupTrainings();
+    const allTrainings = interleaveGroupTrainingsByTrainer(rawTrainings);
     
     if (allTrainings.length === 0) {
       await safeEditMessageText(
@@ -7664,7 +7704,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     contactMessage += `<b>Тренер:</b> ${training.trainerName || 'Тренер'}\n`;
     contactMessage += `<b>Корт:</b> ${training.courtName}\n`;
     contactMessage += `<b>Дата/время:</b> ${getDisplayDateTime(training)}\n`;
-    contactMessage += `<b>Уровень:</b> ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n`;
+    contactMessage += `<b>Уровень:</b> ${levelLabel}\n`;
+    if (training.groupSize) {
+      contactMessage += `<b>Кол-во в группе:</b> ${training.groupSize} чел.\n`;
+    }
     contactMessage += `<b>Цена:</b> ${training.priceSingle}₽ за занятие\n\n`;
     contactMessage += `<b>Контакт тренера:</b> ${training.contact}`;
     
@@ -7761,7 +7804,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const notificationMessage = `👥 <b>Новая заявка на групповую тренировку!</b>\n\n` +
       `<b>Игрок:</b> ${playerName}${playerUsername ? ` (@${playerUsername})` : ''}\n` +
       `<b>Группа:</b> ${training.courtName}\n` +
-      `<b>Уровень:</b> ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n` +
+      `<b>Уровень:</b> ${levelLabel}\n` +
+      (training.groupSize ? `<b>Кол-во в группе:</b> ${training.groupSize} чел.\n` : '') +
       `<b>Дата/время:</b> ${getDisplayDateTime(training)}\n\n` +
       `Хочет присоединиться к вашей группе. Свяжитесь с игроком:`;
     
@@ -7904,7 +7948,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
         message += `${index + 1}. <b>${training.courtName}</b>\n`;
         message += `   📅 ${getDisplayDateTime(training)}\n`;
-        message += `   🎾 Уровень: ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n`;
+        message += `   🎾 Уровень: ${levelLabel}\n`;
+        if (training.groupSize) {
+          message += `   👥 ${training.groupSize} чел.\n`;
+        }
         message += `   💰 ${training.priceSingle}₽ за занятие\n`;
         message += `   📱 ${training.contact}\n\n`;
       });
@@ -7965,7 +8012,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
           message += `${index + 1}. <b>${training.courtName}</b>\n`;
           message += `   📅 ${getDisplayDateTime(training)}\n`;
-          message += `   🎾 Уровень: ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n`;
+          message += `   🎾 Уровень: ${levelLabel}\n`;
+          if (training.groupSize) {
+            message += `   👥 ${training.groupSize} чел.\n`;
+          }
           message += `   💰 ${training.priceSingle}₽ за занятие\n`;
           message += `   📱 ${training.contact}\n\n`;
         });
@@ -8229,6 +8279,16 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     const profile = await getUserProfile(userId);
     const userName = profile?.name || query.from.first_name;
+    
+    // Удаляем текущее сообщение (например, со списком групп), чтобы заменить его приветствием
+    const msgId = query.message?.message_id;
+    if (typeof msgId === 'number' && query.message?.chat?.id) {
+      try {
+        await getBot().deleteMessage(chatId, msgId);
+      } catch (_) {
+        // Игнорируем ошибку (сообщение могло быть уже удалено или недоступно для удаления)
+      }
+    }
     
     const mainMenuKeyboard6 = await getMainMenuKeyboard();
     await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
