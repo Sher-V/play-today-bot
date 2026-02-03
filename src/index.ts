@@ -720,7 +720,7 @@ function formatGroupTrainingDescription(training: GroupTraining, index: number):
   // Формируем описание: имя тренера и название корта
   let description = `${index}. <b>${trainerName}</b> — ${courtName}\n`;
   description += `📅 ${formattedDateTime}\n`;
-  description += `🎾 ${levelLabel}\n`;
+  description += training.groupSize ? `🎾 ${levelLabel}, ${training.groupSize} чел.\n` : `🎾 ${levelLabel}\n`;
   description += `💰 ${training.priceSingle}₽ за занятие\n\n`;
   
   return description;
@@ -962,6 +962,7 @@ enum GroupTrainingStep {
   DATE_TIME = 'date_time',
   IS_RECURRING = 'is_recurring',
   DURATION = 'duration',
+  GROUP_SIZE = 'group_size',
   LEVEL = 'level',
   PRICE_SINGLE = 'price_single',
   CONTACT = 'contact'
@@ -977,6 +978,7 @@ interface GroupTrainingDraft {
   dateTime?: string;
   isRecurring?: boolean; // true = регулярное место, false = разовое занятие
   duration?: number; // Длительность в часах (1, 1.5, 2)
+  groupSize?: '3-4' | '5-6'; // Количество людей в группе
   level?: string;
   priceSingle?: number;
   contact?: string;
@@ -988,7 +990,7 @@ const groupTrainingDrafts = new Map<number, GroupTrainingDraft>();
  * Определяет общее количество шагов в зависимости от того, нужно ли спрашивать имя тренера и контакт
  */
 function getTotalGroupTrainingSteps(skipTrainerName: boolean, skipContact: boolean): number {
-  let total = 8;
+  let total = 9;
   if (skipTrainerName) total--;
   if (skipContact) total--;
   return total;
@@ -1004,6 +1006,7 @@ function getCurrentStepNumber(currentStep: GroupTrainingStep, skipTrainerName: b
     GroupTrainingStep.DATE_TIME,
     GroupTrainingStep.IS_RECURRING,
     GroupTrainingStep.DURATION,
+    GroupTrainingStep.GROUP_SIZE,
     GroupTrainingStep.LEVEL,
     GroupTrainingStep.PRICE_SINGLE,
     GroupTrainingStep.CONTACT
@@ -1096,6 +1099,7 @@ interface GroupTraining {
   dateTime: string; // Формат "21.11 19:00"
   isRecurring?: boolean; // true = регулярное место, false = разовое (скрывается после даты)
   duration: number; // Длительность в часах (1, 1.5, 2)
+  groupSize?: '3-4' | '5-6'; // Количество людей в группе
   level: string;
   priceSingle: number;
   contact: string;
@@ -3772,6 +3776,7 @@ async function handleMessage(msg: TelegramBot.Message) {
           dateTime: draft.dateTime!,
           isRecurring: draft.isRecurring ?? true,
           duration: draft.duration || 1,
+          groupSize: draft.groupSize,
           level: draft.level!,
           priceSingle: draft.priceSingle!,
           contact: draft.contact!,
@@ -3865,6 +3870,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         dateTime: draft.dateTime!,
         isRecurring: draft.isRecurring ?? true,
         duration: draft.duration || 1, // По умолчанию 1 час, если не указано
+        groupSize: draft.groupSize,
         level: draft.level!,
         priceSingle: draft.priceSingle!,
         contact: draft.contact!,
@@ -7658,7 +7664,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     contactMessage += `<b>Тренер:</b> ${training.trainerName || 'Тренер'}\n`;
     contactMessage += `<b>Корт:</b> ${training.courtName}\n`;
     contactMessage += `<b>Дата/время:</b> ${getDisplayDateTime(training)}\n`;
-    contactMessage += `<b>Уровень:</b> ${levelLabel}\n`;
+    contactMessage += `<b>Уровень:</b> ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n`;
     contactMessage += `<b>Цена:</b> ${training.priceSingle}₽ за занятие\n\n`;
     contactMessage += `<b>Контакт тренера:</b> ${training.contact}`;
     
@@ -7755,7 +7761,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const notificationMessage = `👥 <b>Новая заявка на групповую тренировку!</b>\n\n` +
       `<b>Игрок:</b> ${playerName}${playerUsername ? ` (@${playerUsername})` : ''}\n` +
       `<b>Группа:</b> ${training.courtName}\n` +
-      `<b>Уровень:</b> ${levelLabel}\n` +
+      `<b>Уровень:</b> ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n` +
       `<b>Дата/время:</b> ${getDisplayDateTime(training)}\n\n` +
       `Хочет присоединиться к вашей группе. Свяжитесь с игроком:`;
     
@@ -7898,7 +7904,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
         message += `${index + 1}. <b>${training.courtName}</b>\n`;
         message += `   📅 ${getDisplayDateTime(training)}\n`;
-        message += `   🎾 Уровень: ${levelLabel}\n`;
+        message += `   🎾 Уровень: ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n`;
         message += `   💰 ${training.priceSingle}₽ за занятие\n`;
         message += `   📱 ${training.contact}\n\n`;
       });
@@ -7959,7 +7965,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
           message += `${index + 1}. <b>${training.courtName}</b>\n`;
           message += `   📅 ${getDisplayDateTime(training)}\n`;
-          message += `   🎾 Уровень: ${levelLabel}\n`;
+          message += `   🎾 Уровень: ${levelLabel}${training.groupSize ? `, ${training.groupSize} чел.` : ''}\n`;
           message += `   💰 ${training.priceSingle}₽ за занятие\n`;
           message += `   📱 ${training.contact}\n\n`;
         });
@@ -8064,6 +8070,36 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const skipFlags = await getGroupTrainingSkipFlags(userId);
     const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
     
+    // Переходим к шагу количества людей в группе
+    groupTrainingStates.set(userId, GroupTrainingStep.GROUP_SIZE);
+    const currentStepNum = getCurrentStepNumber(GroupTrainingStep.GROUP_SIZE, skipFlags.skipTrainerName, skipFlags.skipContact);
+    
+    await getBot().sendMessage(chatId, 
+      `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nСколько людей может заниматься в группе?`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '3-4', callback_data: 'group_training_group_size_3_4' }],
+            [{ text: '5-6', callback_data: 'group_training_group_size_5_6' }]
+          ]
+        }
+      }
+    );
+    
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Обработка выбора количества людей в группе
+  if (data === 'group_training_group_size_3_4' || data === 'group_training_group_size_5_6') {
+    const draft = groupTrainingDrafts.get(userId) || {};
+    draft.groupSize = data === 'group_training_group_size_3_4' ? '3-4' : '5-6';
+    groupTrainingDrafts.set(userId, draft);
+    
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const totalSteps = getTotalGroupTrainingSteps(skipFlags.skipTrainerName, skipFlags.skipContact);
+    
     // Переходим к шагу уровня
     groupTrainingStates.set(userId, GroupTrainingStep.LEVEL);
     const currentStepNum = getCurrentStepNumber(GroupTrainingStep.LEVEL, skipFlags.skipTrainerName, skipFlags.skipContact);
@@ -8108,6 +8144,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       dateTime: draft.dateTime!,
       isRecurring: draft.isRecurring ?? true,
       duration: draft.duration || 1, // По умолчанию 1 час, если не указано
+      groupSize: draft.groupSize,
       level: draft.level!,
       priceSingle: draft.priceSingle!,
       contact: draft.contact!,
