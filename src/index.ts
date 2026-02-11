@@ -29,8 +29,21 @@ import {
 import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
 import { isBannedUser } from './constants/banned-user-ids';
+import { CITIES, canSelectCity, getCityByIndex, isMoscowCity, isVoronezhCity, DEFAULT_TIMEZONE, OFFSET_UTC3 } from './constants/cities';
 import { getCourtPrice, getBotToken, isDev } from './utils/config-utils';
+import { getTodayKeyInTimezone } from './utils/date-utils';
 import { getRemoteConfigValue } from './utils/remote-config';
+import { createYooKassaPayment } from './utils/yookassa';
+import {
+  CLUBS_COLLECTION,
+  BOOKINGS_SUBCOLLECTION,
+  COURTS_SUBCOLLECTION,
+  RESERVATIONS_COLLECTION,
+  type Club,
+  type ClubBooking,
+  type ClubPricing,
+  type VoronezhReservation,
+} from './types/club-slots';
 
 // Типы для Cloud Functions
 interface CloudFunctionRequest extends IncomingMessage {
@@ -363,6 +376,7 @@ interface CoachMediaItem {
 
 interface UserProfile {
   name?: string;
+  city?: string; // Название города на русском (Москва, Воронеж)
   level?: string;
   districts?: string[];
   favorites?: string[]; // Массив ID избранных кортов
@@ -465,6 +479,344 @@ async function updateUserFavorites(userId: number, favorites: string[]): Promise
     console.error(`Ошибка обновления избранных кортов для пользователя ${userId}:`, error);
     return false;
   }
+}
+
+// --------------- Воронеж: клубы и свободные слоты из Firestore ---------------
+// Источник данных: коллекция clubs, подколлекции courts и bookings.
+// Занято = всё, что есть в bookings; свободно = любое время, не покрытое бронированием.
+
+/** Клубы с интеграцией бронирования. Цена за час по умолчанию. */
+const DEFAULT_PRICE_PER_HOUR = 2700;
+
+/** Время закрытия клуба (HH:MM). Занятие не должно заканчиваться позже. */
+const DEFAULT_CLUB_CLOSING_TIME = '24:00';
+
+/** Парсит время "HH:MM" или "H:MM" в минуты от полуночи. */
+function timeToMinutes(timeStr: string): number {
+  const [h, m] = timeStr.trim().split(':').map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+/**
+ * Возвращает цену за час (руб) для времени начала слота по pricing клуба.
+ * dateKey в формате YYYY-MM-DD (для определения будни/выходные).
+ * Если нет pricing или время не попало в сегмент — возвращает null.
+ */
+function getPriceForTime(pricing: ClubPricing | undefined, dateKey: string, timeStr: string): number | null {
+  if (!pricing) return null;
+  const day = new Date(dateKey + 'T12:00:00').getDay(); // 0 = воскресенье, 6 = суббота
+  const segments = (day === 0 || day === 6) ? pricing.weekend : pricing.weekday;
+  if (!segments?.length) return null;
+  const timeMins = timeToMinutes(timeStr);
+  for (const seg of segments) {
+    const startMins = timeToMinutes(seg.startTime);
+    const endMins = timeToMinutes(seg.endTime);
+    if (timeMins >= startMins && timeMins < endMins) return seg.priceRub;
+  }
+  return null;
+}
+
+/** Возвращает клубы по городу из Firestore. */
+async function getClubsByCity(city: string): Promise<Club[]> {
+  try {
+    const snapshot = await firestore
+      .collection(CLUBS_COLLECTION)
+      .where('city', '==', city)
+      .get();
+    const clubs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Club));
+    console.log(`[club-slots] getClubsByCity city=${city} count=${clubs.length} ids=${clubs.map(c => c.id).join(',')} names=${clubs.map(c => c.name).join(', ')}`);
+    return clubs;
+  } catch (error) {
+    console.error(`[getClubsByCity] ${city}:`, error);
+    return [];
+  }
+}
+
+/** Корты клуба из Firestore (подколлекция courts). */
+async function getCourtsForClub(clubId: string): Promise<{ id: string; name: string }[]> {
+  try {
+    const snapshot = await firestore
+      .collection(CLUBS_COLLECTION)
+      .doc(clubId)
+      .collection(COURTS_SUBCOLLECTION)
+      .get();
+    const courts = snapshot.docs.map(doc => ({ id: doc.id, name: (doc.data().name as string) || doc.id }));
+    console.log(`[club-slots] getCourtsForClub clubId=${clubId} count=${courts.length} ids=${courts.map(c => c.id).join(',')}`);
+    return courts;
+  } catch (error) {
+    console.error(`[getCourtsForClub] ${clubId}:`, error);
+    return [];
+  }
+}
+
+/** Форматирует Timestamp в строку времени по Москве (HH:MM) для логов. */
+function formatBookingTimeMoscow(t: ClubBooking['startTime'] | ClubBooking['endTime']): string {
+  if (!t) return 'null';
+  let date: Date;
+  if (typeof (t as { toDate?: () => Date }).toDate === 'function') {
+    date = (t as { toDate: () => Date }).toDate();
+  } else if (typeof (t as unknown as { _seconds?: number })._seconds === 'number') {
+    date = new Date((t as unknown as { _seconds: number })._seconds * 1000);
+  } else {
+    return String(t);
+  }
+  return date.toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/** Брони на одну дату (YYYY-MM-DD) в клубе. startTime/endTime — Timestamp. */
+async function getBookingsForClubOnDate(clubId: string, dateKey: string): Promise<ClubBooking[]> {
+  try {
+    const dayEnd = new Date(`${dateKey}T23:59:59.999${OFFSET_UTC3}`);
+    const { Timestamp } = await import('@google-cloud/firestore');
+    const startTs = Timestamp.fromDate(new Date(`${dateKey}T00:00:00${OFFSET_UTC3}`));
+    const endTs = Timestamp.fromDate(dayEnd);
+    const snapshot = await firestore
+      .collection(CLUBS_COLLECTION)
+      .doc(clubId)
+      .collection(BOOKINGS_SUBCOLLECTION)
+      .where('startTime', '<=', endTs)
+      .where('endTime', '>=', startTs)
+      .get();
+    const bookings = snapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() } as ClubBooking))
+      .filter(b => b.status !== 'canceled');
+    const toStr = (t: ClubBooking['startTime']) => {
+      if (!t) return 'null';
+      if (typeof (t as { toDate?: () => Date }).toDate === 'function') return (t as { toDate: () => Date }).toDate().toISOString();
+      if (typeof (t as unknown as { _seconds?: number })._seconds === 'number') return new Date((t as unknown as { _seconds: number })._seconds * 1000).toISOString();
+      return String(t);
+    };
+    console.log(`[club-slots] getBookingsForClubOnDate clubId=${clubId} dateKey=${dateKey} count=${bookings.length}`);
+    bookings.forEach(b => {
+      const startMoscow = formatBookingTimeMoscow(b.startTime);
+      const endMoscow = formatBookingTimeMoscow(b.endTime);
+      console.log(`  [booking] id=${b.id} courtId=${b.courtId || '-'} ${startMoscow}-${endMoscow} (UTC: ${toStr(b.startTime)} — ${toStr(b.endTime)})`);
+    });
+    return bookings;
+  } catch (error) {
+    console.error(`[getBookingsForClubOnDate] ${clubId} ${dateKey}:`, error);
+    return [];
+  }
+}
+
+/** Брони одного корта на дату (для расчёта свободных слотов по кортам). */
+async function getBookingsForCourtOnDate(
+  clubId: string,
+  courtId: string,
+  dateKey: string
+): Promise<ClubBooking[]> {
+  const all = await getBookingsForClubOnDate(clubId, dateKey);
+  return all.filter(b => b.courtId === courtId);
+}
+
+/** Диапазоны часов по id слота времени (morning/day/evening/any). */
+function getHourRangeForTimeSlotIds(timeSlotIds: string[]): { startHour: number; endHour: number } {
+  const hasAny = timeSlotIds.includes('any');
+  if (hasAny || timeSlotIds.length === 0) {
+    return { startHour: 8, endHour: 23 };
+  }
+  let startHour = 24;
+  let endHour = 0;
+  for (const id of timeSlotIds) {
+    const opt = timeOptions.find(o => o.id === id) as { startHour?: number; endHour?: number } | undefined;
+    if (opt && typeof opt.startHour === 'number' && typeof opt.endHour === 'number') {
+      startHour = Math.min(startHour, opt.startHour);
+      endHour = Math.max(endHour, opt.endHour);
+    }
+  }
+  if (endHour === 24) endHour = 23;
+  if (startHour > endHour) return { startHour: 8, endHour: 23 };
+  return { startHour: Math.max(0, startHour), endHour: Math.min(23, endHour) };
+}
+
+/**
+ * Свободные часовые слоты для одного корта: часы, не пересекающиеся с бронированиями.
+ * Данные только из Firestore: clubs/{clubId}/bookings (всё занятое — брони, остальное свободно).
+ */
+function getFreeHoursForCourt(
+  bookings: ClubBooking[],
+  dateKey: string,
+  startHour: number,
+  endHour: number
+): string[] {
+  const occupied: { id: string; start: number; end: number }[] = bookings.map(b => {
+    const start = b.startTime && typeof (b.startTime as { toDate?: () => Date }).toDate === 'function'
+      ? (b.startTime as { toDate: () => Date }).toDate().getTime()
+      : new Date((b.startTime as unknown as { _seconds: number })._seconds * 1000).getTime();
+    const end = b.endTime && typeof (b.endTime as { toDate?: () => Date }).toDate === 'function'
+      ? (b.endTime as { toDate: () => Date }).toDate().getTime()
+      : new Date((b.endTime as unknown as { _seconds: number })._seconds * 1000).getTime();
+    return { id: b.id, start, end };
+  });
+  if (occupied.length > 0) {
+    console.log(`[club-slots] getFreeHoursForCourt dateKey=${dateKey} startHour=${startHour} endHour=${endHour} occupiedCount=${occupied.length}`);
+    occupied.forEach(o => {
+      const startMoscow = new Date(o.start).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
+      const endMoscow = new Date(o.end).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
+      console.log(`  [occupied] bookingId=${o.id} ${startMoscow}-${endMoscow}`);
+    });
+  }
+  const free: string[] = [];
+  for (let h = startHour; h < endHour; h++) {
+    const slotStart = new Date(`${dateKey}T${String(h).padStart(2, '0')}:00:00${OFFSET_UTC3}`);
+    const slotEnd = new Date(`${dateKey}T${String(h + 1).padStart(2, '0')}:00:00${OFFSET_UTC3}`);
+    const slotStartMs = slotStart.getTime();
+    const slotEndMs = slotEnd.getTime();
+    const overlapping = occupied.filter(o => o.start < slotEndMs && o.end > slotStartMs);
+    if (overlapping.length > 0) {
+      console.log(`  [slot ${String(h).padStart(2, '0')}:00] занято (брони: ${overlapping.map(o => o.id).join(', ')})`);
+    } else {
+      free.push(`${String(h).padStart(2, '0')}:00`);
+    }
+  }
+  return free;
+}
+
+/**
+ * Свободные часовые слоты клуба на дату: из коллекции clubs и подколлекции bookings.
+ * Занято = всё, что есть в bookings; свободно = остальное время.
+ * Если у клуба несколько кортов — слот свободен, если свободен хотя бы один корт.
+ */
+async function getFreeHourSlotsForClub(
+  clubId: string,
+  dateKey: string,
+  timeSlotIds: string[]
+): Promise<string[]> {
+  const { startHour, endHour } = getHourRangeForTimeSlotIds(timeSlotIds);
+  console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} dateKey=${dateKey} timeSlotIds=${timeSlotIds.join(',')} hourRange=${startHour}-${endHour}`);
+  const courts = await getCourtsForClub(clubId);
+
+  if (courts.length === 0) {
+    // Нет подколлекции кортов — считаем все брони клуба как один «виртуальный» корт
+    const bookings = await getBookingsForClubOnDate(clubId, dateKey);
+    const free = getFreeHoursForCourt(bookings, dateKey, startHour, endHour);
+    console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} no courts, virtual court bookings=${bookings.length} freeSlots=${free.join(',')}`);
+    return filterPastSlotTimesForToday(dateKey, free);
+  }
+
+  const freeSet = new Set<string>();
+  for (const court of courts) {
+    const bookings = await getBookingsForCourtOnDate(clubId, court.id, dateKey);
+    const free = getFreeHoursForCourt(bookings, dateKey, startHour, endHour);
+    console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} courtId=${court.id} bookings=${bookings.length} freeSlots=${free.join(',')}`);
+    free.forEach(h => freeSet.add(h));
+  }
+  let result = Array.from(freeSet).sort();
+  result = filterPastSlotTimesForToday(dateKey, result);
+  console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} totalFreeSlots=${result.length} slots=${result.join(',')}`);
+  return result;
+}
+
+/** Клубы с массивами свободных слотов на дату и числом учтённых бронирований. */
+async function getVoronezhClubsWithSlots(
+  dateKey: string,
+  timeSlotIds: string[]
+): Promise<{ clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number }[]> {
+  console.log(`[club-slots] getVoronezhClubsWithSlots dateKey=${dateKey} timeSlotIds=${timeSlotIds.join(',')}`);
+  const clubs = await getClubsByCity('Воронеж');
+  const result: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number }[] = [];
+  for (const club of clubs) {
+    const [slots, bookings] = await Promise.all([
+      getFreeHourSlotsForClub(club.id, dateKey, timeSlotIds),
+      getBookingsForClubOnDate(club.id, dateKey),
+    ]);
+    console.log(`[club-slots] getVoronezhClubsWithSlots clubId=${club.id} clubName=${club.name} slotsCount=${slots.length} bookingCount=${bookings.length}`);
+    if (slots.length > 0) {
+      result.push({
+        clubId: club.id,
+        clubName: club.name,
+        pricePerHour: club.pricePerHour ?? DEFAULT_PRICE_PER_HOUR,
+        pricing: club.pricing,
+        slots,
+        bookingCount: bookings.length,
+      });
+    }
+  }
+  console.log(`[club-slots] getVoronezhClubsWithSlots result clubsWithSlots=${result.length}`);
+  return result;
+}
+
+/**
+ * Объединяет подряд идущие часовые слоты в диапазоны (как в обычном боте).
+ * Например: ['18:00','19:00','20:00','21:00','22:00'] → [{ start: '18:00', end: '22:00', hours: 5 }].
+ */
+function mergeConsecutiveHourSlots(slots: string[]): { start: string; end: string; hours: number }[] {
+  if (slots.length === 0) return [];
+  const toMins = (t: string) => {
+    const [h, m] = t.split(':').map(Number);
+    return h * 60 + (m ?? 0);
+  };
+  const toTime = (mins: number) => {
+    const h = Math.floor(mins / 60) % 24;
+    const m = mins % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
+  const sorted = [...slots].sort((a, b) => toMins(a) - toMins(b));
+  const ranges: { start: string; end: string; hours: number }[] = [];
+  let rangeStart = sorted[0];
+  let rangeStartMins = toMins(rangeStart);
+  let count = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    const slotMins = toMins(sorted[i]);
+    const expectedMins = rangeStartMins + count * 60;
+    if (slotMins === expectedMins) {
+      count++;
+    } else {
+      ranges.push({ start: rangeStart, end: toTime(rangeStartMins + count * 60), hours: count });
+      rangeStart = sorted[i];
+      rangeStartMins = toMins(rangeStart);
+      count = 1;
+    }
+  }
+  ranges.push({ start: rangeStart, end: toTime(rangeStartMins + count * 60), hours: count });
+  return ranges;
+}
+
+/** Форматирует результаты поиска по клубам в том же виде, что и обычный бот (с объединением слотов). */
+function formatVoronezhSlotsMessage(
+  clubsWithSlots: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount?: number }[],
+  dateStr: string,
+  dateKey: string
+): string {
+  if (clubsWithSlots.length === 0) {
+    return `🎾 На ${dateStr} свободных кортов не найдено.`;
+  }
+  let message = `🎾 *Свободные корты на ${dateStr}*\n\n`;
+  for (const { clubName, pricePerHour, pricing, slots } of clubsWithSlots) {
+    message += `📍 *${clubName}*\n`;
+    const ranges = mergeConsecutiveHourSlots(slots);
+    for (const { start, end } of ranges) {
+      const price = getPriceForTime(pricing, dateKey, start) ?? pricePerHour;
+      message += `🕒 ${start}–${end} — ${price}₽/час\n`;
+    }
+    message += '\n';
+  }
+  return message;
+}
+
+/**
+ * Отправляет пользователю уведомление об успешной оплате (Шаг 3).
+ * Вызывать из вебхука оплаты после подтверждения платежа: обновить резерв (status: 'paid'),
+ * затем вызвать эту функцию.
+ */
+async function sendVoronezhBookingPaidNotification(
+  chatId: number,
+  reservation: { clubName: string; slotStart: string; durationMinutes: number; price: number }
+): Promise<void> {
+  const endMinutes =
+    reservation.slotStart.split(':').reduce((acc, part, i) => acc + (i === 0 ? Number(part) * 60 : Number(part)), 0) +
+    reservation.durationMinutes;
+  const endH = Math.floor(endMinutes / 60);
+  const endM = endMinutes % 60;
+  const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+  const hoursStr = reservation.durationMinutes === 60 ? '1 час' : `${reservation.durationMinutes / 60} ч`;
+  const text =
+    USER_TEXTS.BOOK_PAID_HEADER + '\n\n' +
+    USER_TEXTS.BOOK_PAID_CLUB(reservation.clubName) + '\n' +
+    USER_TEXTS.BOOK_PAID_TIME(reservation.slotStart, endTime, hoursStr) + '\n' +
+    USER_TEXTS.BOOK_PAID_AMOUNT(reservation.price) + '\n\n' +
+    USER_TEXTS.BOOK_PAID_FOOTER;
+  await getBot().sendMessage(chatId, text);
 }
 
 /**
@@ -932,6 +1284,20 @@ interface SearchState {
   totalPages?: number;
 }
 const searchStates = new Map<number, SearchState>();
+
+// Состояние бронирования корта (шаги 1–2)
+interface VoronezhBookingState {
+  clubId: string;
+  clubName: string;
+  pricePerHour: number;
+  pricing?: ClubPricing;
+  date: string;
+  dateStr: string;
+  freeSlots: string[]; // ['10:00', '11:00', ...]
+  selectedSlotStart?: string; // после выбора времени
+  selectedDurationMinutes?: number; // после выбора длительности
+}
+const voronezhBookingStates = new Map<number, VoronezhBookingState>();
 
 // Шаги регистрации тренера
 enum CoachRegistrationStep {
@@ -2093,7 +2459,7 @@ function formatFavoriteCourtsSlots(
       // Получаем цену для каждого слота
       for (const slot of slots) {
         const [hours, minutes] = slot.time.split(':').map(Number);
-        const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+        const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00${OFFSET_UTC3}`;
         const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
         let price = configPrice !== null ? configPrice : (slot.price || null);
         
@@ -2181,7 +2547,7 @@ function groupSlotsByPrice(
   // Получаем цену для каждого слота из конфигурации
   const slotsWithPrice = slots.map(slot => {
     const [hours, minutes] = slot.time.split(':').map(Number);
-    const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00+03:00`;
+    const dateTimeStr = `${dateKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00${OFFSET_UTC3}`;
     const configPrice = getCourtPrice(siteName, dateTimeStr, slot.duration);
     let price = configPrice !== null ? configPrice : (slot.price || null);
     
@@ -2556,6 +2922,8 @@ async function getAvailableCourtsCountByLocation(
   
   // Фильтруем по выбранному времени
   const filteredByTime = filterSlotsByTime(siteSlots, selectedTimeSlots);
+  // На сегодня не учитываем прошедшее время
+  const filteredByPast = filterPastSiteSlotsForToday(date, filteredByTime);
   
   // Получаем маппинг локаций для текущего спорта
   const COURT_LOCATIONS = sport === SportType.PADEL ? PADEL_COURT_LOCATIONS : TENNIS_COURT_LOCATIONS;
@@ -2563,7 +2931,7 @@ async function getAvailableCourtsCountByLocation(
   // Подсчитываем уникальные корты в каждой локации
   const courtsByLocation = new Map<string, Set<string>>();
   
-  for (const { siteName } of filteredByTime) {
+  for (const { siteName } of filteredByPast) {
     const courtLocations = COURT_LOCATIONS[siteName] || [];
     for (const location of courtLocations) {
       if (!courtsByLocation.has(location)) {
@@ -2731,6 +3099,47 @@ function formatMoscowDateToYYYYMMDD(moscowDate: Date): string {
   return formatter.format(moscowDate);
 }
 
+/** Сегодня в часовом поясе по умолчанию (Москва/Воронеж, UTC+3). */
+function getMoscowTodayKey(): string {
+  return getTodayKeyInTimezone(DEFAULT_TIMEZONE);
+}
+
+/**
+ * Убирает слоты на прошедшее время, когда дата — сегодня.
+ * slotTimes — массив "HH:00" (Воронеж).
+ */
+function filterPastSlotTimesForToday(dateKey: string, slotTimes: string[]): string[] {
+  if (dateKey !== getMoscowTodayKey()) return slotTimes;
+  const now = Date.now();
+  return slotTimes.filter(t => {
+    const slotStart = new Date(dateKey + 'T' + t + ':00' + OFFSET_UTC3).getTime();
+    return slotStart >= now;
+  });
+}
+
+/**
+ * Убирает слоты на прошедшее время для сегодня.
+ * siteSlots — результат getSlotsByDate (Москва/падел).
+ */
+function filterPastSiteSlotsForToday(
+  dateKey: string,
+  siteSlots: { siteName: string; slots: Slot[] }[]
+): { siteName: string; slots: Slot[] }[] {
+  if (dateKey !== getMoscowTodayKey()) return siteSlots;
+  const now = Date.now();
+  return siteSlots
+    .map(({ siteName, slots }) => ({
+      siteName,
+      slots: slots.filter(slot => {
+        const [h, m] = slot.time.split(':');
+        const timeStr = `${String(h).padStart(2, '0')}:${m || '00'}:00`;
+        const slotStart = new Date(dateKey + 'T' + timeStr + OFFSET_UTC3).getTime();
+        return slotStart >= now;
+      })
+    }))
+    .filter(({ slots }) => slots.length > 0);
+}
+
 function getAvailableTimeOptions(dateKey: string): typeof timeOptions {
   // Получаем сегодняшнюю дату в московском времени
   const now = new Date();
@@ -2873,11 +3282,194 @@ function getNoCourtsFoundKeyboard(sport: Sport): TelegramBot.InlineKeyboardButto
   ];
 }
 
+/**
+ * Запуск поиска кортов без выбора локации (город в профиле не Москва).
+ * Используется при time_done и при авто-переходе после выбора даты (один слот времени).
+ */
+async function runCourtSearchSkipLocation(
+  userId: number,
+  chatId: number,
+  messageId: number | undefined
+): Promise<void> {
+  const searchState = searchStates.get(userId);
+  if (!searchState) return;
+  searchState.selectedLocations = ['any'];
+  searchStates.set(userId, searchState);
+  const profile = await getUserProfile(userId) || {};
+  const emoji = searchState.sport === SportType.PADEL ? '🏓' : '🎾';
+  if (messageId) {
+    await safeEditMessageText(
+      USER_TEXTS.SEARCHING_COURTS(searchState.dateStr, emoji),
+      { chat_id: chatId, message_id: messageId }
+    );
+  }
+  if (isVoronezhCity(profile.city) && searchState.sport === SportType.TENNIS) {
+    const clubsWithSlots = await getVoronezhClubsWithSlots(searchState.date, searchState.selectedTimeSlots);
+    const message = formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date) +
+      '\n' + USER_TEXTS.BOOK_FOOTER;
+    const clubButtons: TelegramBot.InlineKeyboardButton[][] = clubsWithSlots.map(c => [
+      { text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }
+    ]);
+    if (messageId) {
+      await safeEditMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: clubButtons }
+      });
+    } else {
+      await getBot().sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: clubButtons }
+      });
+    }
+    return;
+  }
+  const slotsData = await loadSlots(searchState.sport, searchState.date);
+  if (!slotsData) {
+    if (messageId) {
+      await safeEditMessageText(USER_TEXTS.ERROR_LOAD_SLOTS, { chat_id: chatId, message_id: messageId });
+    } else {
+      await getBot().sendMessage(chatId, USER_TEXTS.ERROR_LOAD_SLOTS);
+    }
+    searchStates.delete(userId);
+    return;
+  }
+  const userProfile = await getUserProfile(userId);
+  const favoriteCourts = userProfile?.favorites || [];
+  const siteSlots = getSlotsByDate(slotsData, searchState.date);
+  const filteredByLocation = filterSlotsByLocation(siteSlots, ['any'], searchState.sport);
+  const filteredByTime = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
+  const filteredByPast = filterPastSiteSlotsForToday(searchState.date, filteredByTime);
+  const filteredSlots = sortSlotsByPriority(filteredByPast, searchState.sport, favoriteCourts);
+  try {
+    const currentProfile = await getUserProfile(userId);
+    if (currentProfile) {
+      currentProfile.lastCourtSearch = {
+        date: searchState.dateStr,
+        time: searchState.selectedTimeSlots.join(', '),
+        location: 'Любое',
+        timestamp: Date.now()
+      };
+      await saveUserProfile(userId, currentProfile);
+    }
+  } catch (_) {}
+  if (filteredSlots.length === 0) {
+    const errorMessage = USER_TEXTS.NO_COURTS_ANY_DATE;
+    if (messageId) {
+      await safeEditMessageText(errorMessage, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+    } else {
+      await getBot().sendMessage(chatId, errorMessage, { parse_mode: 'Markdown' });
+    }
+    return;
+  }
+  const pageSize = 5;
+  const totalPages = Math.ceil(filteredSlots.length / pageSize);
+  searchState.siteSlots = filteredSlots;
+  searchState.lastUpdated = slotsData.lastUpdated;
+  searchState.currentPage = 1;
+  searchState.totalPages = totalPages;
+  searchStates.set(userId, searchState);
+  const message = formatSlotsPage(
+    searchState.dateStr,
+    filteredSlots,
+    searchState.sport,
+    1,
+    pageSize,
+    slotsData.lastUpdated,
+    searchState.date,
+    favoriteCourts
+  );
+  if (messageId) {
+    await safeEditMessageText(message, {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: await getPaginationKeyboard(1, totalPages, searchState.sport) }
+    });
+  } else {
+    await getBot().sendMessage(chatId, message, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: await getPaginationKeyboard(1, totalPages, searchState.sport) }
+    });
+  }
+}
+
 // Обработка команды /start
 async function handleStart(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
+  const userId = msg.from?.id;
   const userName = msg.from?.first_name || 'друг';
-  
+  const text = msg.text || '';
+  const startParam = text.startsWith('/start ') ? text.slice(7).trim() : '';
+
+  // Редирект после успешной оплаты: /start paid_<reservationId>
+  if (startParam.startsWith('paid_') && userId) {
+    const reservationId = startParam.replace('paid_', '');
+    const resDoc = await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).get();
+    if (resDoc.exists) {
+      const res = resDoc.data() as VoronezhReservation;
+      if (res.userId === userId && res.status === 'paid') {
+        const [startH, startM] = (res.slotStart || '0:0').split(':').map(Number);
+        const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
+        const endMinutes = startMinutes + (res.durationMinutes || 0);
+        const endH = Math.floor(endMinutes / 60);
+        const endMin = endMinutes % 60;
+        const endTime = `${String(endH).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+        let courtName = 'Корт';
+        try {
+          const bookingDoc = await firestore
+            .collection(CLUBS_COLLECTION)
+            .doc(res.clubId)
+            .collection(BOOKINGS_SUBCOLLECTION)
+            .doc(reservationId)
+            .get();
+          if (bookingDoc.exists) {
+            const courtId = (bookingDoc.data() as ClubBooking)?.courtId;
+            if (courtId) {
+              const courts = await getCourtsForClub(res.clubId);
+              const court = courts.find(c => c.id === courtId);
+              if (court?.name) courtName = court.name;
+            }
+          }
+        } catch (_) {
+          // игнорируем
+        }
+        const successText =
+          `✅ *Бронирование подтверждено*\n\n` +
+          `📍 ${res.clubName}, ${courtName}\n` +
+          `🕒 ${res.date} ${res.slotStart}–${endTime} (${res.durationMinutes} мин)\n\n` +
+          `Удачной тренировки! 🎾\n\n` +
+          `Посмотреть свои бронирования: *Ещё* → *Мои бронирования*`;
+        const mainMenuKeyboard = await getMainMenuKeyboard();
+        await getBot().sendMessage(chatId, successText, {
+          parse_mode: 'Markdown',
+          reply_markup: { keyboard: mainMenuKeyboard, resize_keyboard: true }
+        });
+        return;
+      }
+    }
+  }
+
+  // Если у пользователя ещё не выбран город — приветствие + просим выбрать город (только для разрешённых ID)
+  if (userId) {
+    const profile = await getUserProfile(userId) || {};
+    if (!profile.city && canSelectCity(userId)) {
+      const welcomeWithCity = `${USER_TEXTS.WELCOME(userName)}\n\n${USER_TEXTS.CITY_SELECT}`;
+      await getBot().sendMessage(chatId, welcomeWithCity, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            CITIES.map((name, i) => ({ text: name, callback_data: `city_start_${i}` }))
+          ]
+        }
+      });
+      return;
+    }
+  }
+
   const mainMenuKeyboard = await getMainMenuKeyboard();
   await getBot().sendMessage(chatId, USER_TEXTS.WELCOME(userName), {
     parse_mode: 'HTML',
@@ -3301,7 +3893,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   }
 
   // Проверяем команды
-  if (text === '/start') {
+  if ((text ?? '') === '/start' || (text ?? '').startsWith('/start ')) {
     // При выходе на главную сбрасываем незавершённые флоу (создание группы, регистрация тренера)
     if (userId) {
       coachRegistrationStates.delete(userId);
@@ -4192,6 +4784,7 @@ async function handleMessage(msg: TelegramBot.Message) {
             
             // Получаем слоты на дату
             let siteSlots = getSlotsByDate(slotsData, dateKey);
+            siteSlots = filterPastSiteSlotsForToday(dateKey, siteSlots);
             
             // Фильтруем только по избранным кортам
             siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
@@ -4296,24 +4889,31 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       }
       
-      // Получаем профиль для определения статуса тренера
+      // Получаем профиль для определения статуса тренера и города
       const userProfileForMenu = userId ? await getUserProfile(userId) : null;
       const isCoachForMenu = userProfileForMenu?.isCoach || false;
       const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
       const moreMenuCoachButtonData = isCoachForMenu ? 'coach_view_profile' : 'profile_toggle_coach';
-      
-      // Показываем подменю "Еще" с inline-кнопками
+      const showMyBookings = userProfileForMenu && isVoronezhCity(userProfileForMenu.city);
+
+      const moreMenuKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
+      if (showMyBookings) {
+        moreMenuKeyboard.push([{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]);
+      }
+      moreMenuKeyboard.push(
+        [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
+        [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
+        [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
+        [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
+        [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }]
+      );
+      if (userId && canSelectCity(userId)) {
+        moreMenuKeyboard.push([{ text: '🏙 Мой город', callback_data: 'profile_city' }]);
+      }
+      moreMenuKeyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+
       await getBot().sendMessage(chatId, 'Выберите действие:', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
-            [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
-            [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
-            [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
-            [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
-            [{ text: '◀️ Назад', callback_data: 'action_home' }],
-          ]
-        }
+        reply_markup: { inline_keyboard: moreMenuKeyboard }
       });
       break;
     case '◀️ Назад':
@@ -4609,7 +5209,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.VALIDATION_LOCATION_REQUIRED });
         return;
       }
-      
+      // Для Воронежа не используем локальные слоты — ищем через Firestore
+      const profile = await getUserProfile(userId) || {};
+      if (isVoronezhCity(profile.city) && searchState.sport === SportType.TENNIS) {
+        searchState.selectedLocations = ['any'];
+        searchStates.set(userId, searchState);
+        await runCourtSearchSkipLocation(userId, chatId, query.message?.message_id);
+        await safeAnswerCallbackQuery(query.id);
+        return;
+      }
       // Загружаем слоты для выбранной даты
       const slotsData = await loadSlots(searchState.sport, searchState.date);
       if (!slotsData) {
@@ -4630,9 +5238,11 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       // Фильтруем по времени
       const filteredByTime = filterSlotsByTime(filteredByLocation, searchState.selectedTimeSlots);
+      // На сегодня не показываем прошедшее время
+      const filteredByPast = filterPastSiteSlotsForToday(searchState.date, filteredByTime);
       
       // Сортируем по приоритету (избранные корты первыми)
-      const filteredSlots = sortSlotsByPriority(filteredByTime, searchState.sport, favoriteCourts);
+      const filteredSlots = sortSlotsByPriority(filteredByPast, searchState.sport, favoriteCourts);
       
       // Сохраняем информацию о последнем поиске корта в профиль пользователя
       try {
@@ -4702,11 +5312,9 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           // Пробуем показать все варианты без фильтров
           const allSlots = getSlotsByDate(slotsData, searchState.date);
           const allSlotsWithoutLocationFilter = filterSlotsByLocation(allSlots, ['any'], searchState.sport);
-          const allSlotsWithoutFilters = sortSlotsByPriority(
-            filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']),
-            searchState.sport,
-            favoriteCourts
-          );
+          const allSlotsByTime = filterSlotsByTime(allSlotsWithoutLocationFilter, ['any']);
+          const allSlotsByPast = filterPastSiteSlotsForToday(searchState.date, allSlotsByTime);
+          const allSlotsWithoutFilters = sortSlotsByPriority(allSlotsByPast, searchState.sport, favoriteCourts);
           
           if (allSlotsWithoutFilters.length > 0) {
             // Сохраняем альтернативные варианты для последующего показа
@@ -4867,7 +5475,39 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         return;
       }
       
-      // Показываем выбор локации
+      // Воронеж: показываем свободные слоты по клубам и кнопки клубов (Шаг 0)
+      const profile = await getUserProfile(userId) || {};
+      if (isVoronezhCity(profile.city) && searchState.sport === SportType.TENNIS) {
+        await safeEditMessageText(
+          USER_TEXTS.SEARCHING_COURTS(searchState.dateStr, '🎾'),
+          { chat_id: chatId, message_id: query.message?.message_id }
+        );
+        const clubsWithSlots = await getVoronezhClubsWithSlots(
+          searchState.date,
+          searchState.selectedTimeSlots
+        );
+        const message = formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date) +
+          '\n' + USER_TEXTS.BOOK_FOOTER;
+        const clubButtons: TelegramBot.InlineKeyboardButton[][] = clubsWithSlots.map(c => [
+          { text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }
+        ]);
+        await safeEditMessageText(message, {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: clubButtons }
+        });
+        await safeAnswerCallbackQuery(query.id);
+        return;
+      }
+      
+      // Город не Москва: не спрашиваем локацию, сразу ищем (Воронеж или Москва/падел по «любая»)
+      if (!isMoscowCity(profile.city)) {
+        await runCourtSearchSkipLocation(userId, chatId, query.message?.message_id);
+        return;
+      }
+      
+      // Москва: показываем выбор локации
       await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
         chat_id: chatId,
         message_id: query.message?.message_id,
@@ -5256,6 +5896,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     // Получаем слоты на дату
     let siteSlots = getSlotsByDate(slotsData, dateKey);
+    siteSlots = filterPastSiteSlotsForToday(dateKey, siteSlots);
     
     // Фильтруем только по избранным кортам
     siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
@@ -5345,12 +5986,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Если это сегодня и остался только один временной диапазон, автоматически выбираем его
     // Для будущих дат всегда будут все диапазоны, поэтому проверка не нужна
     if (isToday && timeOptionsWithoutAny.length === 1) {
-      // Автоматически выбираем единственный доступный временной диапазон
       const searchState = searchStates.get(userId);
       if (searchState) {
         searchState.selectedTimeSlots = [timeOptionsWithoutAny[0].id];
         searchStates.set(userId, searchState);
-        
+        const profile = await getUserProfile(userId) || {};
+        if (!isMoscowCity(profile.city)) {
+          await runCourtSearchSkipLocation(userId, chatId, query.message?.message_id);
+          return;
+        }
         await getBot().sendMessage(chatId, USER_TEXTS.LOCATION_SELECTION, {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -5399,10 +6043,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       
       // Если остался только один временной диапазон, автоматически выбираем его
       if (timeOptionsWithoutAny.length === 1) {
-        // Автоматически выбираем единственный доступный временной диапазон
         searchState.selectedTimeSlots = [timeOptionsWithoutAny[0].id];
         searchStates.set(userId, searchState);
-        
+        const profile = await getUserProfile(userId) || {};
+        if (!isMoscowCity(profile.city)) {
+          await runCourtSearchSkipLocation(userId, chatId, query.message?.message_id);
+          return;
+        }
         const messageId = query.message?.message_id;
         if (messageId) {
           await safeEditMessageText(USER_TEXTS.LOCATION_SELECTION, {
@@ -5774,6 +6421,530 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
+  // --------------- Воронеж: бронирование корта (Шаги 1–3) ---------------
+
+  // Шаг 1: пользователь выбрал клуб — показываем слоты клуба кнопками
+  if (data?.startsWith('voronezh_club_')) {
+    const clubId = data.replace('voronezh_club_', '');
+    const searchState = searchStates.get(userId);
+    if (!searchState || searchState.sport !== SportType.TENNIS) {
+      await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_SESSION_EXPIRED });
+      return;
+    }
+    const clubs = await getClubsByCity('Воронеж');
+    const club = clubs.find(c => c.id === clubId);
+    if (!club) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Клуб не найден.' });
+      return;
+    }
+    const freeSlots = await getFreeHourSlotsForClub(
+      clubId,
+      searchState.date,
+      searchState.selectedTimeSlots
+    );
+    if (freeSlots.length === 0) {
+      await safeEditMessageText(
+        `В клубе «${club.name}» на выбранное время свободных слотов не осталось.`,
+        { chat_id: chatId, message_id: query.message?.message_id }
+      );
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    const pricePerHour = club.pricePerHour ?? DEFAULT_PRICE_PER_HOUR;
+    voronezhBookingStates.set(userId, {
+      clubId,
+      clubName: club.name,
+      pricePerHour,
+      pricing: club.pricing,
+      date: searchState.date,
+      dateStr: searchState.dateStr,
+      freeSlots,
+    });
+    const header = USER_TEXTS.BOOK_CLUB_SLOTS_HEADER(club.name);
+    const footer = '\n\n' + USER_TEXTS.BOOK_SLOT_FOOTER;
+    const slotButtons: TelegramBot.InlineKeyboardButton[][] = [];
+    const rowSize = 3;
+    for (let i = 0; i < freeSlots.length; i += rowSize) {
+      slotButtons.push(
+        freeSlots.slice(i, i + rowSize).map(t => ({
+          text: t,
+          callback_data: `voronezh_slot_${t.replace(':', '-')}` as string,
+        }))
+      );
+    }
+    await safeEditMessageText(header + footer, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: { inline_keyboard: slotButtons },
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Шаг 1.5: пользователь выбрал время — предлагаем длительность (1ч–3ч с шагом 30 мин)
+  if (data?.startsWith('voronezh_slot_')) {
+    const slotTime = data.replace('voronezh_slot_', '').replace(/-/g, ':');
+    const state = voronezhBookingStates.get(userId);
+    if (!state || !state.freeSlots.includes(slotTime)) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Сессия истекла или слот недоступен.' });
+      return;
+    }
+    const [startH, startM] = slotTime.split(':').map(Number);
+    const slotStartMinutes = startH * 60 + (startM ?? 0);
+    const [closeH, closeM] = DEFAULT_CLUB_CLOSING_TIME.split(':').map(Number);
+    const closingMinutes = closeH * 60 + (closeM ?? 0);
+    const maxDurationMinutes = closingMinutes - slotStartMinutes;
+
+    const durations = [60, 90, 120, 150, 180];
+    const courts = await getCourtsForClub(state.clubId);
+    const slotStartDate = new Date(`${state.date}T${slotTime}${OFFSET_UTC3}`);
+    const availableDurations: number[] = [];
+    for (const dur of durations) {
+      if (dur > maxDurationMinutes) continue; // занятие закончится после закрытия клуба
+      const slotEndMs = slotStartDate.getTime() + dur * 60 * 1000;
+      const slotStartMs = slotStartDate.getTime();
+      let freeForDuration = false;
+      const toMs = (t: ClubBooking['startTime']) =>
+        t && typeof (t as { toDate?: () => Date }).toDate === 'function'
+          ? (t as { toDate: () => Date }).toDate().getTime()
+          : new Date((t as unknown as { _seconds: number })._seconds * 1000).getTime();
+      if (courts.length === 0) {
+        const bookings = await getBookingsForClubOnDate(state.clubId, state.date);
+        const occupied = bookings.map(b => ({ start: toMs(b.startTime), end: toMs(b.endTime) }));
+        freeForDuration = !occupied.some(o => o.start < slotEndMs && o.end > slotStartMs);
+      } else {
+        for (const court of courts) {
+          const bookings = await getBookingsForCourtOnDate(state.clubId, court.id, state.date);
+          const occupied = bookings.map(b => ({ start: toMs(b.startTime), end: toMs(b.endTime) }));
+          if (!occupied.some(o => o.start < slotEndMs && o.end > slotStartMs)) {
+            freeForDuration = true;
+            break;
+          }
+        }
+      }
+      if (freeForDuration) availableDurations.push(dur);
+    }
+    state.selectedSlotStart = slotTime;
+    voronezhBookingStates.set(userId, state);
+    const durationLabels: Record<number, string> = {
+      60: '1 час',
+      90: '1,5 часа',
+      120: '2 часа',
+      150: '2,5 часа',
+      180: '3 часа',
+    };
+    const durationButtons: TelegramBot.InlineKeyboardButton[][] = availableDurations.length > 0
+      ? [availableDurations.map(d => ({
+          text: durationLabels[d] ?? `${d / 60} ч`,
+          callback_data: `voronezh_duration_${d}`,
+        }))]
+      : [];
+    await safeEditMessageText(
+      `Выберите длительность бронирования (начало ${slotTime}):`,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: { inline_keyboard: durationButtons },
+      }
+    );
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Шаг 2: пользователь выбрал длительность — подтверждение и кнопка «Оплатить»
+  if (data?.startsWith('voronezh_duration_')) {
+    const durationMinutes = parseInt(data.replace('voronezh_duration_', ''), 10);
+    const state = voronezhBookingStates.get(userId);
+    if (!state || !state.selectedSlotStart) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Сессия истекла.' });
+      return;
+    }
+    state.selectedDurationMinutes = durationMinutes;
+    voronezhBookingStates.set(userId, state);
+    const pricePerHour = getPriceForTime(state.pricing, state.date, state.selectedSlotStart) ?? state.pricePerHour;
+    const [startH, startM] = state.selectedSlotStart.split(':').map(Number);
+    const endMinutes = startH * 60 + (startM || 0) + durationMinutes;
+    const endH = Math.floor(endMinutes / 60);
+    const endM = endMinutes % 60;
+    const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+    const price = Math.round((pricePerHour * durationMinutes) / 60);
+    const hoursStr = durationMinutes === 60 ? '1 час' : `${durationMinutes / 60} ч`;
+    const confirmText =
+      USER_TEXTS.BOOK_CONFIRM_HEADER + '\n\n' +
+      USER_TEXTS.BOOK_CONFIRM_CLUB(state.clubName) + '\n' +
+      USER_TEXTS.BOOK_CONFIRM_TIME(state.selectedSlotStart, endTime, hoursStr) + '\n' +
+      USER_TEXTS.BOOK_CONFIRM_PRICE(price) + '\n\n' +
+      USER_TEXTS.BOOK_CONFIRM_RESERVE;
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const reservationId = `voronezh_${userId}_${Date.now()}`;
+    const reservation: VoronezhReservation = {
+      id: reservationId,
+      userId,
+      chatId,
+      clubId: state.clubId,
+      clubName: state.clubName,
+      date: state.date,
+      slotStart: state.selectedSlotStart,
+      durationMinutes,
+      price,
+      status: 'pending',
+      expiresAt,
+    };
+    await firestore
+      .collection(RESERVATIONS_COLLECTION)
+      .doc(reservationId)
+      .set(reservation);
+    await safeEditMessageText(confirmText, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Оплатить', callback_data: `voronezh_pay_${reservationId}` }]],
+      },
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Кнопка «Оплатить» — создаём платёж в ЮKassa и даём ссылку (Шаг 3 — по вебхуку при успешной оплате)
+  if (data?.startsWith('voronezh_pay_')) {
+    const reservationId = data.replace('voronezh_pay_', '');
+    const doc = await firestore
+      .collection(RESERVATIONS_COLLECTION)
+      .doc(reservationId)
+      .get();
+    if (!doc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Резерв не найден или истёк.' });
+      return;
+    }
+    const res = doc.data() as VoronezhReservation;
+    if (res.status !== 'pending') {
+      await safeAnswerCallbackQuery(query.id, { text: 'Бронирование уже обработано.' });
+      return;
+    }
+    const expiresAt = res.expiresAt && typeof (res.expiresAt as { toDate?: () => Date }).toDate === 'function'
+      ? (res.expiresAt as { toDate: () => Date }).toDate()
+      : new Date((res.expiresAt as unknown as { _seconds?: number })?._seconds ? (res.expiresAt as unknown as { _seconds: number })._seconds * 1000 : 0);
+    if (expiresAt.getTime() < Date.now()) {
+      await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).update({ status: 'expired' });
+      await safeAnswerCallbackQuery(query.id, { text: 'Время резерва истекло. Начните бронирование заново.' });
+      return;
+    }
+    // Резервируем слот: добавляем бронь в клуб со статусом hold
+    const { Timestamp } = await import('@google-cloud/firestore');
+    const courts = await getCourtsForClub(res.clubId);
+    const courtId = courts.length > 0 ? courts[0].id : 'default';
+    const startDate = new Date(`${res.date}T${res.slotStart}:00${OFFSET_UTC3}`);
+    const endDate = new Date(startDate.getTime() + res.durationMinutes * 60 * 1000);
+    const username = query.from?.username;
+    const userComment = username
+      ? `Пользователь из бота (@${username})`
+      : `Пользователь из бота (userId: ${userId})`;
+    const holdBooking = {
+      id: reservationId,
+      courtId,
+      type: 'one_time' as const,
+      startTime: Timestamp.fromDate(startDate),
+      endTime: Timestamp.fromDate(endDate),
+      comment: userComment,
+      status: 'hold' as const,
+      reservationId,
+    };
+    await firestore
+      .collection(CLUBS_COLLECTION)
+      .doc(res.clubId)
+      .collection(BOOKINGS_SUBCOLLECTION)
+      .doc(reservationId)
+      .set(holdBooking);
+    const description = `Бронирование корта: ${res.clubName}, ${res.date} ${res.slotStart}, ${res.durationMinutes} мин`;
+    const botUsername = process.env.BOT_USERNAME || 'play_today_bot';
+    const returnUrl = `https://t.me/${botUsername}?start=paid_${reservationId}`;
+    const payment = await createYooKassaPayment(
+      res.price,
+      description,
+      reservationId,
+      { userId: String(res.userId), chatId: String(res.chatId) },
+      returnUrl
+    );
+    if (!payment) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Не удалось создать платёж. Попробуйте позже.' });
+      return;
+    }
+    await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).update({
+      yookassaPaymentId: payment.paymentId,
+    });
+    await safeEditMessageText(
+      '⏳ Время зарезервировано. Перейдите по ссылке для оплаты (в течение 5 минут):',
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [[{ text: 'Оплатить', url: payment.confirmationUrl }]],
+        },
+      }
+    );
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Выбор города при /start (первый вход)
+  if (data?.startsWith('city_start_')) {
+    if (!canSelectCity(userId)) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Выбор города недоступен.' });
+      return;
+    }
+    const index = parseInt(data.replace('city_start_', ''), 10);
+    const cityName = getCityByIndex(index);
+    if (cityName === undefined || index < 0 || index >= CITIES.length) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Неизвестный город.' });
+      return;
+    }
+    const profile = await getUserProfile(userId) || {};
+    profile.city = cityName;
+    await saveUserProfile(userId, profile);
+    const mainMenuKeyboard = await getMainMenuKeyboard();
+    try {
+      await getBot().deleteMessage(chatId, query.message?.message_id ?? 0);
+    } catch (_) {
+      // Игнорируем, если не удалось удалить
+    }
+    await getBot().sendMessage(chatId, USER_TEXTS.CITY_SELECTION_THANK(cityName), {
+      reply_markup: {
+        keyboard: mainMenuKeyboard,
+        resize_keyboard: true
+      }
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Мой город — показать текущий город и кнопки смены (только для разрешённых ID)
+  if (data === 'profile_city') {
+    coachRegistrationStates.delete(userId);
+    if (!canSelectCity(userId)) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Выбор города недоступен.' });
+      return;
+    }
+    const profile = await getUserProfile(userId) || {};
+    const cityName = profile.city ?? '';
+    const text = cityName
+      ? USER_TEXTS.MY_CITY(cityName)
+      : USER_TEXTS.MY_CITY_NOT_SET;
+    await safeEditMessageText(
+      text,
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            CITIES.map((name, i) => ({ text: name, callback_data: `city_select_${i}` })),
+            [{ text: '◀️ Назад', callback_data: 'more_menu' }]
+          ]
+        }
+      }
+    );
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Смена города из раздела "Мой город"
+  if (data?.startsWith('city_select_')) {
+    if (!canSelectCity(userId)) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Выбор города недоступен.' });
+      return;
+    }
+    const index = parseInt(data.replace('city_select_', ''), 10);
+    const cityName = getCityByIndex(index);
+    if (cityName === undefined || index < 0 || index >= CITIES.length) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Неизвестный город.' });
+      return;
+    }
+    const profile = await getUserProfile(userId) || {};
+    profile.city = cityName;
+    await saveUserProfile(userId, profile);
+    await safeEditMessageText(
+      USER_TEXTS.CITY_SAVED(cityName),
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [[{ text: '◀️ Назад в Еще', callback_data: 'more_menu' }]]
+        }
+      }
+    );
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Возврат в меню "Еще"
+  if (data === 'more_menu') {
+    coachRegistrationStates.delete(userId);
+    groupTrainingStates.delete(userId);
+    groupTrainingDrafts.delete(userId);
+    const userProfileForMenu = await getUserProfile(userId);
+    const isCoachForMenu = userProfileForMenu?.isCoach || false;
+    const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
+    const moreMenuCoachButtonData = isCoachForMenu ? 'coach_view_profile' : 'profile_toggle_coach';
+    const showMyBookings = userProfileForMenu && isVoronezhCity(userProfileForMenu.city);
+
+    const moreMenuKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
+    if (showMyBookings) {
+      moreMenuKeyboard.push([{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]);
+    }
+    moreMenuKeyboard.push(
+      [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
+      [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
+      [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
+      [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
+      [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }]
+    );
+    if (canSelectCity(userId)) {
+      moreMenuKeyboard.push([{ text: '🏙 Мой город', callback_data: 'profile_city' }]);
+    }
+    moreMenuKeyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+
+    await safeEditMessageText(
+      'Выберите действие:',
+      {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: { inline_keyboard: moreMenuKeyboard }
+      }
+    );
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Мои бронирования (только для Воронежа)
+  if (data === 'my_bookings') {
+    coachRegistrationStates.delete(userId);
+    const snapshot = await firestore
+      .collection(RESERVATIONS_COLLECTION)
+      .where('userId', '==', userId)
+      .get();
+    const reservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VoronezhReservation & { id: string }));
+    reservations.sort((a, b) => {
+      const d = a.date.localeCompare(b.date);
+      if (d !== 0) return d;
+      return (a.slotStart || '').localeCompare(b.slotStart || '');
+    });
+
+    const statusLabel: Record<string, string> = {
+      pending: '⏳ Ожидает оплаты',
+      paid: '✅ Оплачено',
+      expired: '❌ Истекло',
+      canceled: 'Отменено'
+    };
+
+    let text = '📅 *Мои бронирования*\n\n';
+    const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+    if (reservations.length === 0) {
+      text += 'У вас пока нет бронирований.';
+    } else {
+      for (const r of reservations) {
+        const [startH, startM] = (r.slotStart || '0:0').split(':').map(Number);
+        const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
+        const endMinutes = startMinutes + (r.durationMinutes || 0);
+        const endH = Math.floor(endMinutes / 60);
+        const endMin = endMinutes % 60;
+        const endTime = `${String(endH).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+        const label = statusLabel[r.status] ?? r.status;
+        text += `📍 ${r.clubName}\n`;
+        text += `🕒 ${r.date} ${r.slotStart}–${endTime} (${r.durationMinutes} мин)\n`;
+        text += `${label} · ${r.price} ₽\n\n`;
+        if (r.status === 'pending' || r.status === 'paid') {
+          keyboard.push([{ text: `❌ Отменить бронь (${r.clubName}, ${r.date} ${r.slotStart})`, callback_data: `cancel_booking_${r.id}` }]);
+        }
+      }
+    }
+    keyboard.push([{ text: '◀️ Назад в Еще', callback_data: 'more_menu' }]);
+
+    await safeEditMessageText(text, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: keyboard }
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Отмена бронирования
+  if (data?.startsWith('cancel_booking_')) {
+    const reservationId = data.replace('cancel_booking_', '');
+    const doc = await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).get();
+    if (!doc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Бронирование не найдено.' });
+      return;
+    }
+    const res = doc.data() as VoronezhReservation;
+    if (res.userId !== userId) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Это не ваше бронирование.' });
+      return;
+    }
+    if (res.status === 'canceled' || res.status === 'expired') {
+      await safeAnswerCallbackQuery(query.id, { text: 'Бронирование уже отменено или истекло.' });
+      return;
+    }
+    await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).update({ status: 'canceled' });
+    try {
+      await firestore
+        .collection(CLUBS_COLLECTION)
+        .doc(res.clubId)
+        .collection(BOOKINGS_SUBCOLLECTION)
+        .doc(reservationId)
+        .update({ status: 'canceled' });
+    } catch (e) {
+      console.error('[cancel_booking] club booking update', reservationId, e);
+    }
+    await safeAnswerCallbackQuery(query.id, { text: 'Бронирование отменено.' });
+    // Обновляем экран «Мои бронирования» — повторно показываем список
+    const snapshot = await firestore
+      .collection(RESERVATIONS_COLLECTION)
+      .where('userId', '==', userId)
+      .get();
+    const reservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VoronezhReservation & { id: string }));
+    reservations.sort((a, b) => {
+      const d = a.date.localeCompare(b.date);
+      if (d !== 0) return d;
+      return (a.slotStart || '').localeCompare(b.slotStart || '');
+    });
+    const statusLabel: Record<string, string> = {
+      pending: '⏳ Ожидает оплаты',
+      paid: '✅ Оплачено',
+      expired: '❌ Истекло',
+      canceled: 'Отменено'
+    };
+    let listText = '📅 *Мои бронирования*\n\n';
+    const listKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
+    if (reservations.length === 0) {
+      listText += 'У вас пока нет бронирований.';
+    } else {
+      for (const r of reservations) {
+        const [startH, startM] = (r.slotStart || '0:0').split(':').map(Number);
+        const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
+        const endMinutes = startMinutes + (r.durationMinutes || 0);
+        const endH = Math.floor(endMinutes / 60);
+        const endMin = endMinutes % 60;
+        const endTime = `${String(endH).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+        const label = statusLabel[r.status] ?? r.status;
+        listText += `📍 ${r.clubName}\n`;
+        listText += `🕒 ${r.date} ${r.slotStart}–${endTime} (${r.durationMinutes} мин)\n`;
+        listText += `${label} · ${r.price} ₽\n\n`;
+        if (r.status === 'pending' || r.status === 'paid') {
+          listKeyboard.push([{ text: `❌ Отменить бронь (${r.clubName}, ${r.date} ${r.slotStart})`, callback_data: `cancel_booking_${r.id}` }]);
+        }
+      }
+    }
+    listKeyboard.push([{ text: '◀️ Назад в Еще', callback_data: 'more_menu' }]);
+    await safeEditMessageText(listText, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: listKeyboard }
+    });
+    return;
+  }
+
   // Обработка кнопки "Профиль" из меню "Еще"
   if (data === 'profile_show') {
     // Сбрасываем состояние заполнения анкеты тренера
@@ -5884,6 +7055,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           
           // Получаем слоты на дату
           let siteSlots = getSlotsByDate(slotsData, dateKey);
+          siteSlots = filterPastSiteSlotsForToday(dateKey, siteSlots);
           
           // Фильтруем только по избранным кортам
           siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));
@@ -8435,6 +9607,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         
         // Получаем слоты на дату
         let siteSlots = getSlotsByDate(slotsData, dateKey);
+        siteSlots = filterPastSiteSlotsForToday(dateKey, siteSlots);
         
         // Фильтруем только по избранным кортам
         siteSlots = siteSlots.filter(({ siteName }) => selectedCourts.includes(siteName));
@@ -8565,6 +9738,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         
         // Получаем слоты на дату
         let siteSlots = getSlotsByDate(slotsData, dateKey);
+        siteSlots = filterPastSiteSlotsForToday(dateKey, siteSlots);
         
         // Фильтруем только по избранным кортам
         siteSlots = siteSlots.filter(({ siteName }) => favoriteCourts.includes(siteName));

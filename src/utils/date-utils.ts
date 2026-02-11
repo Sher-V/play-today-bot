@@ -42,3 +42,16 @@ export function getMoscowHour(date: Date | string): number {
   return parseInt(formatter.format(dateObj), 10);
 }
 
+/**
+ * Возвращает дату «сегодня» в указанном часовом поясе в формате YYYY-MM-DD.
+ * @param timeZone IANA-часовой пояс (например Europe/Moscow).
+ */
+export function getTodayKeyInTimezone(timeZone: string): string {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(new Date());
+}

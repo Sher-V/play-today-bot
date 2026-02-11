@@ -78,6 +78,33 @@ export const USER_TEXTS = {
   COACH_PRICE_INVALID_FORMAT: 'Пожалуйста, введите только целое число (без пробелов, букв и дробных частей)',
   COACH_PRICE_INVALID_RANGE: 'Цена не может быть отрицательной или превышать 50 000 рублей. Пожалуйста, введите корректную цену.',
   COACH_ABOUT_TOO_LONG: (currentLength: number) => `❌ Текст слишком длинный (${currentLength} символов).\n\nМаксимум — 800 символов. Пожалуйста, сократите описание.`,
-  COACH_MEDIA_FILE_TOO_LARGE: '❌ Файл слишком большой (максимум 50 МБ).\n\nПопробуйте сжать видео или загрузите другой файл.'
+  COACH_MEDIA_FILE_TOO_LARGE: '❌ Файл слишком большой (максимум 50 МБ).\n\nПопробуйте сжать видео или загрузите другой файл.',
+
+  // Город
+  CITY_SELECT: '📍 Выбери город:',
+  CITY_SELECTION_THANK: (cityName: string) =>
+    `Спасибо за выбор, ваш текущий город: ${cityName}\n\nВы можете изменить его позднее в разделе Еще`,
+  CITY_SAVED: (cityName: string) => `Город сохранён: ${cityName} ✅`,
+  MY_CITY: (cityName: string) => `🏙 Мой город\n\nТвой город: ${cityName}`,
+  MY_CITY_NOT_SET: '🏙 Мой город\n\nГород не выбран. Выбери город:',
+
+  // Бронирование корта (город-зависимая логика, текст общий)
+  BOOK_FOOTER: 'Чтобы забронировать время на корте, нажмите на номер клуба.',
+  BOOK_CLUB_SLOTS_HEADER: (clubName: string) =>
+    `В клубе «${clubName}» доступны слоты:`,
+  BOOK_SLOT_FOOTER:
+    'Чтобы забронировать время, нажмите на него — мы вышлем ссылку на оплату.',
+  BOOK_CONFIRM_HEADER: '🎾 Подтвердите бронирование',
+  BOOK_CONFIRM_CLUB: (name: string) => `Клуб: ${name}`,
+  BOOK_CONFIRM_TIME: (start: string, end: string, hours: string) =>
+    `Время: ${start}–${end} (${hours})`,
+  BOOK_CONFIRM_PRICE: (price: number) => `Цена: ${price} ₽`,
+  BOOK_CONFIRM_RESERVE: '⏳ Время зарезервировано, оплатите в течение 5 минут.',
+  BOOK_PAID_HEADER: '✅ Бронирование подтверждено!',
+  BOOK_PAID_CLUB: (name: string) => `🎾 ${name}`,
+  BOOK_PAID_TIME: (start: string, end: string, hours: string) =>
+    `🕒 ${start}–${end} (${hours})`,
+  BOOK_PAID_AMOUNT: (price: number) => `💳 Оплачено: ${price} ₽`,
+  BOOK_PAID_FOOTER: 'Ждём вас на корте!',
 } as const;
 
