@@ -54,6 +54,12 @@ export interface Club {
   pricePerHour?: number;
   /** Цены по интервалам времени (будни/выходные). */
   pricing?: ClubPricing;
+  /** Время открытия клуба (HH:MM). */
+  openingTime?: string;
+  /** Время закрытия клуба (HH:MM). Занятие не должно заканчиваться позже. */
+  closingTime?: string;
+  /** Ссылка на Яндекс.Карты. */
+  yandexMapsUrl?: string;
   /** Порядок кортов для отображения (опционально). */
   courtOrder?: string[];
   createdAt?: Date;

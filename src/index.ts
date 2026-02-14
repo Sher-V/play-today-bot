@@ -501,19 +501,50 @@ function timeToMinutes(timeStr: string): number {
  * Возвращает цену за час (руб) для времени начала слота по pricing клуба.
  * dateKey в формате YYYY-MM-DD (для определения будни/выходные).
  * Если нет pricing или время не попало в сегмент — возвращает null.
+ * При пересечении сегментов выбирается наиболее узкий (короткий) — чтобы
+ * например 20:00–22:00 (500₽) имел приоритет над 18:00–22:00 (2000₽).
  */
 function getPriceForTime(pricing: ClubPricing | undefined, dateKey: string, timeStr: string): number | null {
   if (!pricing) return null;
   const day = new Date(dateKey + 'T12:00:00').getDay(); // 0 = воскресенье, 6 = суббота
-  const segments = (day === 0 || day === 6) ? pricing.weekend : pricing.weekday;
+  let segments = (day === 0 || day === 6) ? pricing.weekend : pricing.weekday;
+  if (!segments?.length) segments = pricing.weekday ?? pricing.weekend; // fallback если weekday/weekend пуст
   if (!segments?.length) return null;
   const timeMins = timeToMinutes(timeStr);
+  let best: { width: number; priceRub: number } | null = null;
   for (const seg of segments) {
     const startMins = timeToMinutes(seg.startTime);
     const endMins = timeToMinutes(seg.endTime);
-    if (timeMins >= startMins && timeMins < endMins) return seg.priceRub;
+    if (timeMins >= startMins && timeMins < endMins) {
+      const width = endMins - startMins;
+      if (!best || width < best.width) best = { width, priceRub: seg.priceRub };
+    }
   }
-  return null;
+  return best?.priceRub ?? null;
+}
+
+/** Возвращает цену (руб) за бронирование с учётом цен по временным диапазонам. */
+function calculateBookingPrice(
+  slotStart: string,
+  durationMinutes: number,
+  pricing: ClubPricing | undefined,
+  dateKey: string,
+  pricePerHourFallback: number
+): number {
+  const SLOT_STEP = 30;
+  let total = 0;
+  const startMins = timeToMinutes(slotStart);
+  const endMins = startMins + durationMinutes;
+  for (let m = startMins; m < endMins; m += SLOT_STEP) {
+    const blockEnd = Math.min(m + SLOT_STEP, endMins);
+    const blockMins = blockEnd - m;
+    const h = Math.floor(m / 60) % 24;
+    const min = m % 60;
+    const timeStr = `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    const price = getPriceForTime(pricing, dateKey, timeStr) ?? pricePerHourFallback;
+    total += (price * blockMins) / 60;
+  }
+  return Math.round(total);
 }
 
 /** Возвращает клубы по городу из Firestore. */
@@ -613,9 +644,12 @@ function getHourRangeForTimeSlotIds(timeSlotIds: string[]): { startHour: number;
   return { startHour: Math.max(0, startHour), endHour: Math.min(23, endHour) };
 }
 
+/** Минимальная длительность слота (минуты). Получасовой слот показываем только если он часть блока >= 1.5 ч. */
+const MIN_SLOT_MINUTES = 90;
+
 /**
- * Свободные часовые слоты для одного корта: часы, не пересекающиеся с бронированиями.
- * Данные только из Firestore: clubs/{clubId}/bookings (всё занятое — брони, остальное свободно).
+ * Свободные слоты для одного корта: HH:00 и HH:30, не пересекающиеся с бронированиями.
+ * Получасовой слот (HH:30) показываем только если он входит в блок свободного времени >= 1.5 часа.
  */
 function getFreeHoursForCourt(
   bookings: ClubBooking[],
@@ -632,31 +666,90 @@ function getFreeHoursForCourt(
       : new Date((b.endTime as unknown as { _seconds: number })._seconds * 1000).getTime();
     return { id: b.id, start, end };
   });
+  // Собираем все свободные получасовые слоты и группируем в блоки
+  const totalSteps = Math.floor((endHour - startHour) * 2);
+  const isFree: boolean[] = [];
+  for (let step = 0; step < totalSteps; step++) {
+    const bMins = startHour * 60 + step * 30;
+    const sH = Math.floor(bMins / 60) % 24;
+    const sM = bMins % 60;
+    const eMins = bMins + 30;
+    const eH = Math.floor(eMins / 60) % 24;
+    const eM = eMins % 60;
+    const blockStartMs = new Date(`${dateKey}T${String(sH).padStart(2, '0')}:${String(sM).padStart(2, '0')}:00${OFFSET_UTC3}`).getTime();
+    const blockEndMs = new Date(`${dateKey}T${String(eH).padStart(2, '0')}:${String(eM).padStart(2, '0')}:00${OFFSET_UTC3}`).getTime();
+    const overlapping = occupied.filter(o => o.start < blockEndMs && o.end > blockStartMs);
+    isFree.push(overlapping.length === 0);
+  }
+
   const free: string[] = [];
-  for (let h = startHour; h < endHour; h++) {
-    const slotStart = new Date(`${dateKey}T${String(h).padStart(2, '0')}:00:00${OFFSET_UTC3}`);
-    const slotEnd = new Date(`${dateKey}T${String(h + 1).padStart(2, '0')}:00:00${OFFSET_UTC3}`);
-    const slotStartMs = slotStart.getTime();
-    const slotEndMs = slotEnd.getTime();
-    const overlapping = occupied.filter(o => o.start < slotEndMs && o.end > slotStartMs);
-    if (overlapping.length === 0) {
-      free.push(`${String(h).padStart(2, '0')}:00`);
+  let blockStart = -1;
+  for (let step = 0; step <= totalSteps; step++) {
+    const inBlock = step < totalSteps && isFree[step];
+    if (inBlock && blockStart < 0) {
+      blockStart = step;
+    } else if ((!inBlock || step === totalSteps) && blockStart >= 0) {
+      const blockLengthMin = (step - blockStart) * 30;
+      if (blockLengthMin >= MIN_SLOT_MINUTES) {
+        for (let j = blockStart; j < step; j++) {
+          const baseMins = startHour * 60 + j * 30;
+          const slotH = Math.floor(baseMins / 60) % 24;
+          const slotM = baseMins % 60;
+          free.push(`${String(slotH).padStart(2, '0')}:${String(slotM).padStart(2, '0')}`);
+        }
+      }
+      blockStart = -1;
     }
   }
   return free;
 }
 
+/** Парсит "HH:MM" в час (число). */
+function parseTimeToHour(timeStr: string | undefined): number | undefined {
+  if (!timeStr || !timeStr.trim()) return undefined;
+  const [h, m] = timeStr.trim().split(':').map(Number);
+  if (h === undefined || isNaN(h)) return undefined;
+  return h + (m ?? 0) / 60;
+}
+
+/** Убирает слоты, от которых непрерывное свободное время меньше minMinutes (мин. бронь 1 ч). */
+function filterSlotsByMinDuration(slots: string[], minMinutes: number): string[] {
+  if (slots.length === 0) return [];
+  const toMins = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+  const sorted = [...slots].sort((a, b) => toMins(a) - toMins(b));
+  const SLOT_STEP = 30;
+  return sorted.filter((slot, i) => {
+    const startMins = toMins(slot);
+    let count = 1;
+    for (let j = i + 1; j < sorted.length; j++) {
+      const expected = toMins(sorted[j - 1]) + SLOT_STEP;
+      if (toMins(sorted[j]) === expected) count++;
+      else break;
+    }
+    return count * SLOT_STEP >= minMinutes;
+  });
+}
+
 /**
  * Свободные часовые слоты клуба на дату: из коллекции clubs и подколлекции bookings.
  * Занято = всё, что есть в bookings; свободно = остальное время.
+ * Учитывает openingTime и closingTime клуба (если заданы).
  * Если у клуба несколько кортов — слот свободен, если свободен хотя бы один корт.
  */
 async function getFreeHourSlotsForClub(
   clubId: string,
   dateKey: string,
-  timeSlotIds: string[]
+  timeSlotIds: string[],
+  club?: Club
 ): Promise<string[]> {
-  const { startHour, endHour } = getHourRangeForTimeSlotIds(timeSlotIds);
+  let { startHour, endHour } = getHourRangeForTimeSlotIds(timeSlotIds);
+  const openingHour = club?.openingTime ? parseTimeToHour(club.openingTime) : undefined;
+  const closingHour = club?.closingTime ? parseTimeToHour(club.closingTime) : undefined;
+  if (openingHour !== undefined) startHour = Math.max(startHour, Math.floor(openingHour));
+  if (closingHour !== undefined) endHour = Math.min(endHour, Math.ceil(closingHour));
+  if (club && (club.openingTime || club.closingTime)) {
+    console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} clubName=${club.name} openingTime=${club.openingTime ?? '-'} closingTime=${club.closingTime ?? '-'} hourRange=${startHour}-${endHour}`);
+  }
   const courts = await getCourtsForClub(clubId);
 
   if (courts.length === 0) {
@@ -684,18 +777,19 @@ async function getFreeHourSlotsForClub(
 async function getVoronezhClubsWithSlots(
   dateKey: string,
   timeSlotIds: string[]
-): Promise<{ clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number }[]> {
+): Promise<{ clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number; yandexMapsUrl?: string }[]> {
   const clubs = await getClubsByCity('Воронеж');
-  const result: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number }[] = [];
+  const result: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number; yandexMapsUrl?: string }[] = [];
   for (const club of clubs) {
     const [slots, bookings] = await Promise.all([
-      getFreeHourSlotsForClub(club.id, dateKey, timeSlotIds),
+      getFreeHourSlotsForClub(club.id, dateKey, timeSlotIds, club),
       getBookingsForClubOnDate(club.id, dateKey),
     ]);
     if (slots.length > 0) {
       result.push({
         clubId: club.id,
         clubName: club.name,
+        yandexMapsUrl: club.yandexMapsUrl,
         pricePerHour: club.pricePerHour ?? DEFAULT_PRICE_PER_HOUR,
         pricing: club.pricing,
         slots,
@@ -708,8 +802,8 @@ async function getVoronezhClubsWithSlots(
 }
 
 /**
- * Объединяет подряд идущие часовые слоты в диапазоны (как в обычном боте).
- * Например: ['18:00','19:00','20:00','21:00','22:00'] → [{ start: '18:00', end: '22:00', hours: 5 }].
+ * Объединяет подряд идущие слоты в диапазоны (шаг 30 мин: HH:00 и HH:30).
+ * Например: ['18:30','19:00','19:30','20:00','20:30','21:00'] → [{ start: '18:30', end: '21:00', hours: 2.5 }].
  */
 function mergeConsecutiveHourSlots(slots: string[]): { start: string; end: string; hours: number }[] {
   if (slots.length === 0) return [];
@@ -722,6 +816,7 @@ function mergeConsecutiveHourSlots(slots: string[]): { start: string; end: strin
     const m = mins % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   };
+  const SLOT_STEP_MINS = 30;
   const sorted = [...slots].sort((a, b) => toMins(a) - toMins(b));
   const ranges: { start: string; end: string; hours: number }[] = [];
   let rangeStart = sorted[0];
@@ -729,23 +824,63 @@ function mergeConsecutiveHourSlots(slots: string[]): { start: string; end: strin
   let count = 1;
   for (let i = 1; i < sorted.length; i++) {
     const slotMins = toMins(sorted[i]);
-    const expectedMins = rangeStartMins + count * 60;
+    const expectedMins = rangeStartMins + count * SLOT_STEP_MINS;
     if (slotMins === expectedMins) {
       count++;
     } else {
-      ranges.push({ start: rangeStart, end: toTime(rangeStartMins + count * 60), hours: count });
+      ranges.push({ start: rangeStart, end: toTime(rangeStartMins + count * SLOT_STEP_MINS), hours: count / 2 });
       rangeStart = sorted[i];
       rangeStartMins = toMins(rangeStart);
       count = 1;
     }
   }
-  ranges.push({ start: rangeStart, end: toTime(rangeStartMins + count * 60), hours: count });
+  ranges.push({ start: rangeStart, end: toTime(rangeStartMins + count * SLOT_STEP_MINS), hours: count / 2 });
   return ranges;
+}
+
+/**
+ * Разбивает диапазон по границам цен (когда цена меняется — новый поддиапазон).
+ * Учитывает любое количество сегментов в weekday/weekend.
+ */
+function splitRangeByPrice(
+  rangeStart: string,
+  rangeEnd: string,
+  pricing: ClubPricing | undefined,
+  dateKey: string,
+  pricePerHour: number
+): { start: string; end: string; price: number }[] {
+  const toMins = (t: string) => {
+    const [h, m] = t.split(':').map(Number);
+    return h * 60 + (m ?? 0);
+  };
+  const toTime = (mins: number) => {
+    const h = Math.floor(mins / 60) % 24;
+    const m = mins % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
+  const startMins = toMins(rangeStart);
+  const endMins = toMins(rangeEnd);
+  const result: { start: string; end: string; price: number }[] = [];
+  let segStart = startMins;
+  let segPrice: number | null = null;
+  for (let m = startMins; m < endMins; m += 30) {
+    const timeStr = toTime(m);
+    const price = getPriceForTime(pricing, dateKey, timeStr) ?? pricePerHour;
+    if (segPrice !== null && price !== segPrice) {
+      result.push({ start: toTime(segStart), end: timeStr, price: segPrice });
+      segStart = m;
+    }
+    segPrice = price;
+  }
+  if (segPrice !== null) {
+    result.push({ start: toTime(segStart), end: rangeEnd, price: segPrice });
+  }
+  return result;
 }
 
 /** Форматирует результаты поиска по клубам в том же виде, что и обычный бот (с объединением слотов). */
 function formatVoronezhSlotsMessage(
-  clubsWithSlots: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount?: number }[],
+  clubsWithSlots: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount?: number; yandexMapsUrl?: string }[],
   dateStr: string,
   dateKey: string
 ): string {
@@ -753,14 +888,20 @@ function formatVoronezhSlotsMessage(
     return `🎾 На ${dateStr} свободных кортов не найдено.`;
   }
   let message = `🎾 *Свободные корты на ${dateStr}*\n\n`;
-  for (const { clubName, pricePerHour, pricing, slots } of clubsWithSlots) {
-    message += `📍 *${clubName}*\n`;
-    const ranges = mergeConsecutiveHourSlots(slots);
+  for (let i = 0; i < clubsWithSlots.length; i++) {
+    const { clubName, pricePerHour, pricing, slots, yandexMapsUrl } = clubsWithSlots[i];
+    const clubLine = yandexMapsUrl
+      ? `📍 *${clubName}* — [Карта](${yandexMapsUrl})`
+      : `📍 *${clubName}*`;
+    message += clubLine + '\n';
+    const ranges = mergeConsecutiveHourSlots(slots).filter(r => r.hours >= 1);
     for (const { start, end } of ranges) {
-      const price = getPriceForTime(pricing, dateKey, start) ?? pricePerHour;
-      message += `🕒 ${start}–${end} — ${price}₽/час\n`;
+      const subRanges = splitRangeByPrice(start, end, pricing, dateKey, pricePerHour);
+      for (const { start: s, end: e, price } of subRanges) {
+        message += `🕒 ${s}–${e} — ${price}₽/час\n`;
+      }
     }
-    message += '\n';
+    if (i < clubsWithSlots.length - 1) message += '\n';
   }
   return message;
 }
@@ -1266,7 +1407,8 @@ interface VoronezhBookingState {
   pricing?: ClubPricing;
   date: string;
   dateStr: string;
-  freeSlots: string[]; // ['10:00', '11:00', ...]
+  freeSlots: string[]; // ['10:00', '10:30', ...]
+  closingTime?: string; // HH:MM — время закрытия клуба
   selectedSlotStart?: string; // после выбора времени
   selectedDurationMinutes?: number; // после выбора длительности
 }
@@ -3079,7 +3221,7 @@ function getMoscowTodayKey(): string {
 
 /**
  * Убирает слоты на прошедшее время, когда дата — сегодня.
- * slotTimes — массив "HH:00" (Воронеж).
+ * slotTimes — массив "HH:MM" (Воронеж: HH:00 или HH:30).
  */
 function filterPastSlotTimesForToday(dateKey: string, slotTimes: string[]): string[] {
   if (dateKey !== getMoscowTodayKey()) return slotTimes;
@@ -3278,21 +3420,24 @@ async function runCourtSearchSkipLocation(
   }
   if (isVoronezhCity(profile.city) && searchState.sport === SportType.TENNIS) {
     const clubsWithSlots = await getVoronezhClubsWithSlots(searchState.date, searchState.selectedTimeSlots);
-    const message = formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date) +
-      '\n' + USER_TEXTS.BOOK_FOOTER;
-    const clubButtons: TelegramBot.InlineKeyboardButton[][] = clubsWithSlots.map(c => [
-      { text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }
-    ]);
+    const message = (formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date).trimEnd() +
+      '\n\n' + USER_TEXTS.BOOK_FOOTER).trimEnd();
+    const clubButtons: TelegramBot.InlineKeyboardButton[][] = [
+      ...clubsWithSlots.map(c => [{ text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }]),
+      [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_time' }],
+    ];
     if (messageId) {
       await safeEditMessageText(message, {
         chat_id: chatId,
         message_id: messageId,
         parse_mode: 'Markdown',
+        disable_web_page_preview: true,
         reply_markup: { inline_keyboard: clubButtons }
       });
     } else {
       await getBot().sendMessage(chatId, message, {
         parse_mode: 'Markdown',
+        disable_web_page_preview: true,
         reply_markup: { inline_keyboard: clubButtons }
       });
     }
@@ -5459,15 +5604,17 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           searchState.date,
           searchState.selectedTimeSlots
         );
-        const message = formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date) +
-          '\n' + USER_TEXTS.BOOK_FOOTER;
-        const clubButtons: TelegramBot.InlineKeyboardButton[][] = clubsWithSlots.map(c => [
-          { text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }
-        ]);
+        const message = (formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date).trimEnd() +
+          '\n\n' + USER_TEXTS.BOOK_FOOTER).trimEnd();
+        const clubButtons: TelegramBot.InlineKeyboardButton[][] = [
+          ...clubsWithSlots.map(c => [{ text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }]),
+          [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_time' }],
+        ];
         await safeEditMessageText(message, {
           chat_id: chatId,
           message_id: query.message?.message_id,
           parse_mode: 'Markdown',
+          disable_web_page_preview: true,
           reply_markup: { inline_keyboard: clubButtons }
         });
         await safeAnswerCallbackQuery(query.id);
@@ -6407,16 +6554,68 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       searchState.date,
       searchState.selectedTimeSlots
     );
-    const message = formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date) +
-      '\n' + USER_TEXTS.BOOK_FOOTER;
-    const clubButtons: TelegramBot.InlineKeyboardButton[][] = clubsWithSlots.map(c => [
-      { text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }
-    ]);
+    const message = (formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date).trimEnd() +
+      '\n\n' + USER_TEXTS.BOOK_FOOTER).trimEnd();
+    const clubButtons: TelegramBot.InlineKeyboardButton[][] = [
+      ...clubsWithSlots.map(c => [{ text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }]),
+      [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_time' }],
+    ];
     await safeEditMessageText(message, {
       chat_id: chatId,
       message_id: query.message?.message_id,
       parse_mode: 'Markdown',
+      disable_web_page_preview: true,
       reply_markup: { inline_keyboard: clubButtons }
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Кнопка «Назад» — возврат от списка клубов к выбору времени
+  if (data === 'voronezh_back_to_time') {
+    const searchState = searchStates.get(userId);
+    if (!searchState || searchState.sport !== SportType.TENNIS) {
+      await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_SESSION_EXPIRED });
+      return;
+    }
+    const availableTimeOptions = getAvailableTimeOptions(searchState.date);
+    await safeEditMessageText(USER_TEXTS.TIME_SELECTION, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: {
+        inline_keyboard: getTimeKeyboard(searchState.selectedTimeSlots, availableTimeOptions)
+      }
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Кнопка «Назад» — возврат от выбора длительности к выбору слота
+  if (data === 'voronezh_back_to_slots') {
+    const state = voronezhBookingStates.get(userId);
+    if (!state) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Сессия истекла.' });
+      return;
+    }
+    delete state.selectedSlotStart;
+    voronezhBookingStates.set(userId, state);
+    const header = USER_TEXTS.BOOK_CLUB_SLOTS_HEADER(state.clubName);
+    const footer = '\n\n' + USER_TEXTS.BOOK_SLOT_FOOTER;
+    const slotButtons: TelegramBot.InlineKeyboardButton[][] = [];
+    const rowSize = 3;
+    for (let i = 0; i < state.freeSlots.length; i += rowSize) {
+      slotButtons.push(
+        state.freeSlots.slice(i, i + rowSize).map(t => ({
+          text: t,
+          callback_data: `voronezh_slot_${t.replace(':', '-')}` as string,
+        }))
+      );
+    }
+    slotButtons.push([{ text: '◀️ Назад', callback_data: 'voronezh_back_to_clubs' }]);
+    await safeEditMessageText(header + footer, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: { inline_keyboard: slotButtons },
     });
     await safeAnswerCallbackQuery(query.id);
     return;
@@ -6439,7 +6638,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const freeSlots = await getFreeHourSlotsForClub(
       clubId,
       searchState.date,
-      searchState.selectedTimeSlots
+      searchState.selectedTimeSlots,
+      club
     );
     if (freeSlots.length === 0) {
       await safeEditMessageText(
@@ -6458,14 +6658,16 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       date: searchState.date,
       dateStr: searchState.dateStr,
       freeSlots,
+      closingTime: club.closingTime,
     });
+    const slotOptionsForButtons = filterSlotsByMinDuration(freeSlots, 60); // не показывать слоты, от которых < 1 ч
     const header = USER_TEXTS.BOOK_CLUB_SLOTS_HEADER(club.name);
     const footer = '\n\n' + USER_TEXTS.BOOK_SLOT_FOOTER;
     const slotButtons: TelegramBot.InlineKeyboardButton[][] = [];
     const rowSize = 3;
-    for (let i = 0; i < freeSlots.length; i += rowSize) {
+    for (let i = 0; i < slotOptionsForButtons.length; i += rowSize) {
       slotButtons.push(
-        freeSlots.slice(i, i + rowSize).map(t => ({
+        slotOptionsForButtons.slice(i, i + rowSize).map(t => ({
           text: t,
           callback_data: `voronezh_slot_${t.replace(':', '-')}` as string,
         }))
@@ -6481,7 +6683,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Шаг 1.5: пользователь выбрал время — предлагаем длительность (1ч–3ч с шагом 30 мин)
+  // Шаг 1.5: пользователь выбрал время — предлагаем длительность (от 1ч до конца свободного диапазона)
   if (data?.startsWith('voronezh_slot_')) {
     const slotTime = data.replace('voronezh_slot_', '').replace(/-/g, ':');
     const state = voronezhBookingStates.get(userId);
@@ -6491,11 +6693,35 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     }
     const [startH, startM] = slotTime.split(':').map(Number);
     const slotStartMinutes = startH * 60 + (startM ?? 0);
-    const [closeH, closeM] = DEFAULT_CLUB_CLOSING_TIME.split(':').map(Number);
-    const closingMinutes = closeH * 60 + (closeM ?? 0);
-    const maxDurationMinutes = closingMinutes - slotStartMinutes;
+    const closingTimeStr = state.closingTime ?? DEFAULT_CLUB_CLOSING_TIME;
+    const [closeH, closeM] = closingTimeStr.trim().split(':').map(Number);
+    const closingMinutes = (closeH ?? 24) * 60 + (closeM ?? 0);
+    const maxDurationFromClosing = closingMinutes - slotStartMinutes;
 
-    const durations = [60, 90, 120, 150, 180];
+    // Макс. длительность из свободного диапазона: считаем подряд идущие слоты от выбранного
+    const sortedSlots = [...state.freeSlots].sort((a, b) => {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      return toM(a) - toM(b);
+    });
+    const idx = sortedSlots.indexOf(slotTime);
+    let contiguousCount = 0;
+    if (idx >= 0) {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      for (let i = idx; i < sortedSlots.length; i++) {
+        const expected = toM(slotTime) + contiguousCount * 30;
+        if (toM(sortedSlots[i]) === expected) contiguousCount++;
+        else break;
+      }
+    }
+    const maxDurationFromFreeRange = contiguousCount * 30;
+    const MAX_BOOKING_DURATION_MINUTES = 180; // не более 3 часов
+    const maxDurationMinutes = Math.min(maxDurationFromClosing, maxDurationFromFreeRange, MAX_BOOKING_DURATION_MINUTES);
+
+    // Генерируем варианты длительности: 60, 90, 120, ... до maxDurationMinutes (шаг 30)
+    const durations: number[] = [];
+    for (let d = 60; d <= maxDurationMinutes; d += 30) {
+      durations.push(d);
+    }
     const courts = await getCourtsForClub(state.clubId);
     const slotStartDate = new Date(`${state.date}T${slotTime}${OFFSET_UTC3}`);
     const availableDurations: number[] = [];
@@ -6532,13 +6758,18 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       120: '2 часа',
       150: '2,5 часа',
       180: '3 часа',
+      210: '3,5 часа',
+      240: '4 часа',
     };
     const durationButtons: TelegramBot.InlineKeyboardButton[][] = availableDurations.length > 0
-      ? [availableDurations.map(d => ({
-          text: durationLabels[d] ?? `${d / 60} ч`,
-          callback_data: `voronezh_duration_${d}`,
-        }))]
-      : [];
+      ? [
+          availableDurations.map(d => ({
+            text: durationLabels[d] ?? `${d / 60} ч`,
+            callback_data: `voronezh_duration_${d}`,
+          })),
+          [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }],
+        ]
+      : [[{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }]];
     await safeEditMessageText(
       `Выберите длительность бронирования (начало ${slotTime}):`,
       {
@@ -6561,13 +6792,12 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     }
     state.selectedDurationMinutes = durationMinutes;
     voronezhBookingStates.set(userId, state);
-    const pricePerHour = getPriceForTime(state.pricing, state.date, state.selectedSlotStart) ?? state.pricePerHour;
     const [startH, startM] = state.selectedSlotStart.split(':').map(Number);
     const endMinutes = startH * 60 + (startM || 0) + durationMinutes;
     const endH = Math.floor(endMinutes / 60);
     const endM = endMinutes % 60;
     const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
-    const price = Math.round((pricePerHour * durationMinutes) / 60);
+    const price = calculateBookingPrice(state.selectedSlotStart, durationMinutes, state.pricing, state.date, state.pricePerHour);
     const hoursStr = durationMinutes === 60 ? '1 час' : `${durationMinutes / 60} ч`;
     const confirmText =
       USER_TEXTS.BOOK_CONFIRM_HEADER + '\n\n' +
@@ -6594,12 +6824,140 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       .collection(RESERVATIONS_COLLECTION)
       .doc(reservationId)
       .set(reservation);
+    // Резервируем слот в клубе сразу (статус hold)
+    const { Timestamp } = await import('@google-cloud/firestore');
+    const courts = await getCourtsForClub(state.clubId);
+    const courtId = courts.length > 0 ? courts[0].id : 'default';
+    const startDate = new Date(`${state.date}T${state.selectedSlotStart}:00${OFFSET_UTC3}`);
+    const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+    const username = query.from?.username;
+    const userComment = username
+      ? `Пользователь из бота (@${username})`
+      : `Пользователь из бота (userId: ${userId})`;
+    const holdBooking = {
+      id: reservationId,
+      courtId,
+      type: 'one_time' as const,
+      startTime: Timestamp.fromDate(startDate),
+      endTime: Timestamp.fromDate(endDate),
+      comment: userComment,
+      status: 'hold' as const,
+      reservationId,
+    };
+    await firestore
+      .collection(CLUBS_COLLECTION)
+      .doc(state.clubId)
+      .collection(BOOKINGS_SUBCOLLECTION)
+      .doc(reservationId)
+      .set(holdBooking);
     await safeEditMessageText(confirmText, {
       chat_id: chatId,
       message_id: query.message?.message_id,
       reply_markup: {
-        inline_keyboard: [[{ text: 'Оплатить', callback_data: `voronezh_pay_${reservationId}` }]],
+        inline_keyboard: [
+          [{ text: 'Оплатить', callback_data: `voronezh_pay_${reservationId}` }],
+          [{ text: '◀️ Назад', callback_data: `voronezh_back_from_confirm_${reservationId}` }],
+        ],
       },
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Кнопка «Назад» — отмена подтверждения, удаление резерва, возврат к выбору длительности
+  if (data?.startsWith('voronezh_back_from_confirm_')) {
+    const reservationId = data.replace('voronezh_back_from_confirm_', '');
+    const doc = await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).get();
+    if (!doc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Резерв не найден или уже удалён.' });
+      return;
+    }
+    const res = doc.data() as VoronezhReservation;
+    if (res.status !== 'pending') {
+      await safeAnswerCallbackQuery(query.id, { text: 'Бронирование уже обработано.' });
+      return;
+    }
+    await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).delete();
+    // Удаляем hold-бронь из клуба
+    await firestore
+      .collection(CLUBS_COLLECTION)
+      .doc(res.clubId)
+      .collection(BOOKINGS_SUBCOLLECTION)
+      .doc(reservationId)
+      .delete();
+    const state = voronezhBookingStates.get(userId);
+    if (!state || !state.selectedSlotStart) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Сессия истекла.' });
+      return;
+    }
+    const slotTime = state.selectedSlotStart;
+    const [startH, startM] = slotTime.split(':').map(Number);
+    const slotStartMinutes = startH * 60 + (startM ?? 0);
+    const closingTimeStr = state.closingTime ?? DEFAULT_CLUB_CLOSING_TIME;
+    const [closeH, closeM] = closingTimeStr.trim().split(':').map(Number);
+    const closingMinutes = (closeH ?? 24) * 60 + (closeM ?? 0);
+    const maxDurationFromClosing = closingMinutes - slotStartMinutes;
+    const sortedSlots = [...state.freeSlots].sort((a, b) => {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      return toM(a) - toM(b);
+    });
+    const idx = sortedSlots.indexOf(slotTime);
+    let contiguousCount = 0;
+    if (idx >= 0) {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      for (let i = idx; i < sortedSlots.length; i++) {
+        const expected = toM(slotTime) + contiguousCount * 30;
+        if (toM(sortedSlots[i]) === expected) contiguousCount++;
+        else break;
+      }
+    }
+    const maxDurationFromFreeRange = contiguousCount * 30;
+    const MAX_BOOKING_DURATION_MINUTES = 180;
+    const maxDurationMinutes = Math.min(maxDurationFromClosing, maxDurationFromFreeRange, MAX_BOOKING_DURATION_MINUTES);
+    const durations: number[] = [];
+    for (let d = 60; d <= maxDurationMinutes; d += 30) durations.push(d);
+    const courts = await getCourtsForClub(state.clubId);
+    const slotStartDate = new Date(`${state.date}T${slotTime}${OFFSET_UTC3}`);
+    const availableDurations: number[] = [];
+    const toMs = (t: ClubBooking['startTime']) =>
+      t && typeof (t as { toDate?: () => Date }).toDate === 'function'
+        ? (t as { toDate: () => Date }).toDate().getTime()
+        : new Date((t as unknown as { _seconds: number })._seconds * 1000).getTime();
+    for (const dur of durations) {
+      if (dur > maxDurationMinutes) continue;
+      const slotEndMs = slotStartDate.getTime() + dur * 60 * 1000;
+      const slotStartMs = slotStartDate.getTime();
+      let freeForDuration = false;
+      if (courts.length === 0) {
+        const bookings = await getBookingsForClubOnDate(state.clubId, state.date);
+        const occupied = bookings.map(b => ({ start: toMs(b.startTime), end: toMs(b.endTime) }));
+        freeForDuration = !occupied.some(o => o.start < slotEndMs && o.end > slotStartMs);
+      } else {
+        for (const court of courts) {
+          const bookings = await getBookingsForCourtOnDate(state.clubId, court.id, state.date);
+          const occupied = bookings.map(b => ({ start: toMs(b.startTime), end: toMs(b.endTime) }));
+          if (!occupied.some(o => o.start < slotEndMs && o.end > slotStartMs)) {
+            freeForDuration = true;
+            break;
+          }
+        }
+      }
+      if (freeForDuration) availableDurations.push(dur);
+    }
+    const durationLabels: Record<number, string> = {
+      60: '1 час', 90: '1,5 часа', 120: '2 часа', 150: '2,5 часа',
+      180: '3 часа', 210: '3,5 часа', 240: '4 часа',
+    };
+    const durationButtons: TelegramBot.InlineKeyboardButton[][] = availableDurations.length > 0
+      ? [
+          availableDurations.map(d => ({ text: durationLabels[d] ?? `${d / 60} ч`, callback_data: `voronezh_duration_${d}` })),
+          [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }],
+        ]
+      : [[{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }]];
+    await safeEditMessageText(`Выберите длительность бронирования (начало ${slotTime}):`, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: { inline_keyboard: durationButtons },
     });
     await safeAnswerCallbackQuery(query.id);
     return;
@@ -6626,35 +6984,17 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       : new Date((res.expiresAt as unknown as { _seconds?: number })?._seconds ? (res.expiresAt as unknown as { _seconds: number })._seconds * 1000 : 0);
     if (expiresAt.getTime() < Date.now()) {
       await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).update({ status: 'expired' });
+      // Удаляем hold-бронь из клуба (она создаётся при подтверждении)
+      await firestore
+        .collection(CLUBS_COLLECTION)
+        .doc(res.clubId)
+        .collection(BOOKINGS_SUBCOLLECTION)
+        .doc(reservationId)
+        .delete();
       await safeAnswerCallbackQuery(query.id, { text: 'Время резерва истекло. Начните бронирование заново.' });
       return;
     }
-    // Резервируем слот: добавляем бронь в клуб со статусом hold
-    const { Timestamp } = await import('@google-cloud/firestore');
-    const courts = await getCourtsForClub(res.clubId);
-    const courtId = courts.length > 0 ? courts[0].id : 'default';
-    const startDate = new Date(`${res.date}T${res.slotStart}:00${OFFSET_UTC3}`);
-    const endDate = new Date(startDate.getTime() + res.durationMinutes * 60 * 1000);
-    const username = query.from?.username;
-    const userComment = username
-      ? `Пользователь из бота (@${username})`
-      : `Пользователь из бота (userId: ${userId})`;
-    const holdBooking = {
-      id: reservationId,
-      courtId,
-      type: 'one_time' as const,
-      startTime: Timestamp.fromDate(startDate),
-      endTime: Timestamp.fromDate(endDate),
-      comment: userComment,
-      status: 'hold' as const,
-      reservationId,
-    };
-    await firestore
-      .collection(CLUBS_COLLECTION)
-      .doc(res.clubId)
-      .collection(BOOKINGS_SUBCOLLECTION)
-      .doc(reservationId)
-      .set(holdBooking);
+    // Hold-бронь уже создана при показе экрана подтверждения
     const description = `Бронирование корта: ${res.clubName}, ${res.date} ${res.slotStart}, ${res.durationMinutes} мин`;
     const botUsername = process.env.BOT_USERNAME || 'play_today_bot';
     const returnUrl = `https://t.me/${botUsername}?start=paid_${reservationId}`;
