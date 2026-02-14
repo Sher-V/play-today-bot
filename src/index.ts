@@ -524,7 +524,6 @@ async function getClubsByCity(city: string): Promise<Club[]> {
       .where('city', '==', city)
       .get();
     const clubs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Club));
-    console.log(`[club-slots] getClubsByCity city=${city} count=${clubs.length} ids=${clubs.map(c => c.id).join(',')} names=${clubs.map(c => c.name).join(', ')}`);
     return clubs;
   } catch (error) {
     console.error(`[getClubsByCity] ${city}:`, error);
@@ -541,26 +540,11 @@ async function getCourtsForClub(clubId: string): Promise<{ id: string; name: str
       .collection(COURTS_SUBCOLLECTION)
       .get();
     const courts = snapshot.docs.map(doc => ({ id: doc.id, name: (doc.data().name as string) || doc.id }));
-    console.log(`[club-slots] getCourtsForClub clubId=${clubId} count=${courts.length} ids=${courts.map(c => c.id).join(',')}`);
     return courts;
   } catch (error) {
     console.error(`[getCourtsForClub] ${clubId}:`, error);
     return [];
   }
-}
-
-/** Форматирует Timestamp в строку времени по Москве (HH:MM) для логов. */
-function formatBookingTimeMoscow(t: ClubBooking['startTime'] | ClubBooking['endTime']): string {
-  if (!t) return 'null';
-  let date: Date;
-  if (typeof (t as { toDate?: () => Date }).toDate === 'function') {
-    date = (t as { toDate: () => Date }).toDate();
-  } else if (typeof (t as unknown as { _seconds?: number })._seconds === 'number') {
-    date = new Date((t as unknown as { _seconds: number })._seconds * 1000);
-  } else {
-    return String(t);
-  }
-  return date.toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 /** Брони на одну дату (YYYY-MM-DD) в клубе. startTime/endTime — Timestamp. */
@@ -577,20 +561,20 @@ async function getBookingsForClubOnDate(clubId: string, dateKey: string): Promis
       .where('startTime', '<=', endTs)
       .where('endTime', '>=', startTs)
       .get();
+    const rawCount = snapshot.docs.length;
     const bookings = snapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() } as ClubBooking))
       .filter(b => b.status !== 'canceled');
-    const toStr = (t: ClubBooking['startTime']) => {
-      if (!t) return 'null';
-      if (typeof (t as { toDate?: () => Date }).toDate === 'function') return (t as { toDate: () => Date }).toDate().toISOString();
-      if (typeof (t as unknown as { _seconds?: number })._seconds === 'number') return new Date((t as unknown as { _seconds: number })._seconds * 1000).toISOString();
-      return String(t);
+    const toTime = (t: ClubBooking['startTime'] | ClubBooking['endTime']) => {
+      if (!t) return '?';
+      const date = typeof (t as { toDate?: () => Date }).toDate === 'function'
+        ? (t as { toDate: () => Date }).toDate()
+        : new Date((t as unknown as { _seconds: number })._seconds * 1000);
+      return date.toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
     };
-    console.log(`[club-slots] getBookingsForClubOnDate clubId=${clubId} dateKey=${dateKey} count=${bookings.length}`);
+    console.log(`[club-slots] getBookingsForClubOnDate clubId=${clubId} dateKey=${dateKey} rawDocs=${rawCount} bookings=${bookings.length}`);
     bookings.forEach(b => {
-      const startMoscow = formatBookingTimeMoscow(b.startTime);
-      const endMoscow = formatBookingTimeMoscow(b.endTime);
-      console.log(`  [booking] id=${b.id} courtId=${b.courtId || '-'} ${startMoscow}-${endMoscow} (UTC: ${toStr(b.startTime)} — ${toStr(b.endTime)})`);
+      console.log(`  [booking] id=${b.id} courtId=${b.courtId ?? '-'} ${toTime(b.startTime)}-${toTime(b.endTime)}`);
     });
     return bookings;
   } catch (error) {
@@ -648,14 +632,6 @@ function getFreeHoursForCourt(
       : new Date((b.endTime as unknown as { _seconds: number })._seconds * 1000).getTime();
     return { id: b.id, start, end };
   });
-  if (occupied.length > 0) {
-    console.log(`[club-slots] getFreeHoursForCourt dateKey=${dateKey} startHour=${startHour} endHour=${endHour} occupiedCount=${occupied.length}`);
-    occupied.forEach(o => {
-      const startMoscow = new Date(o.start).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
-      const endMoscow = new Date(o.end).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
-      console.log(`  [occupied] bookingId=${o.id} ${startMoscow}-${endMoscow}`);
-    });
-  }
   const free: string[] = [];
   for (let h = startHour; h < endHour; h++) {
     const slotStart = new Date(`${dateKey}T${String(h).padStart(2, '0')}:00:00${OFFSET_UTC3}`);
@@ -663,9 +639,7 @@ function getFreeHoursForCourt(
     const slotStartMs = slotStart.getTime();
     const slotEndMs = slotEnd.getTime();
     const overlapping = occupied.filter(o => o.start < slotEndMs && o.end > slotStartMs);
-    if (overlapping.length > 0) {
-      console.log(`  [slot ${String(h).padStart(2, '0')}:00] занято (брони: ${overlapping.map(o => o.id).join(', ')})`);
-    } else {
+    if (overlapping.length === 0) {
       free.push(`${String(h).padStart(2, '0')}:00`);
     }
   }
@@ -683,27 +657,26 @@ async function getFreeHourSlotsForClub(
   timeSlotIds: string[]
 ): Promise<string[]> {
   const { startHour, endHour } = getHourRangeForTimeSlotIds(timeSlotIds);
-  console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} dateKey=${dateKey} timeSlotIds=${timeSlotIds.join(',')} hourRange=${startHour}-${endHour}`);
   const courts = await getCourtsForClub(clubId);
 
   if (courts.length === 0) {
     // Нет подколлекции кортов — считаем все брони клуба как один «виртуальный» корт
     const bookings = await getBookingsForClubOnDate(clubId, dateKey);
     const free = getFreeHoursForCourt(bookings, dateKey, startHour, endHour);
-    console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} no courts, virtual court bookings=${bookings.length} freeSlots=${free.join(',')}`);
-    return filterPastSlotTimesForToday(dateKey, free);
+    const result = filterPastSlotTimesForToday(dateKey, free);
+    console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} dateKey=${dateKey} (no courts) freeSlots=[${result.join(', ')}]`);
+    return result;
   }
 
   const freeSet = new Set<string>();
   for (const court of courts) {
     const bookings = await getBookingsForCourtOnDate(clubId, court.id, dateKey);
     const free = getFreeHoursForCourt(bookings, dateKey, startHour, endHour);
-    console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} courtId=${court.id} bookings=${bookings.length} freeSlots=${free.join(',')}`);
     free.forEach(h => freeSet.add(h));
   }
   let result = Array.from(freeSet).sort();
   result = filterPastSlotTimesForToday(dateKey, result);
-  console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} totalFreeSlots=${result.length} slots=${result.join(',')}`);
+  console.log(`[club-slots] getFreeHourSlotsForClub clubId=${clubId} dateKey=${dateKey} freeSlots=[${result.join(', ')}]`);
   return result;
 }
 
@@ -712,7 +685,6 @@ async function getVoronezhClubsWithSlots(
   dateKey: string,
   timeSlotIds: string[]
 ): Promise<{ clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number }[]> {
-  console.log(`[club-slots] getVoronezhClubsWithSlots dateKey=${dateKey} timeSlotIds=${timeSlotIds.join(',')}`);
   const clubs = await getClubsByCity('Воронеж');
   const result: { clubId: string; clubName: string; pricePerHour: number; pricing?: ClubPricing; slots: string[]; bookingCount: number }[] = [];
   for (const club of clubs) {
@@ -720,7 +692,6 @@ async function getVoronezhClubsWithSlots(
       getFreeHourSlotsForClub(club.id, dateKey, timeSlotIds),
       getBookingsForClubOnDate(club.id, dateKey),
     ]);
-    console.log(`[club-slots] getVoronezhClubsWithSlots clubId=${club.id} clubName=${club.name} slotsCount=${slots.length} bookingCount=${bookings.length}`);
     if (slots.length > 0) {
       result.push({
         clubId: club.id,
@@ -732,7 +703,7 @@ async function getVoronezhClubsWithSlots(
       });
     }
   }
-  console.log(`[club-slots] getVoronezhClubsWithSlots result clubsWithSlots=${result.length}`);
+  console.log(`[club-slots] getVoronezhClubsWithSlots dateKey=${dateKey} clubs=${result.length} slots=${result.map(c => `${c.clubName}: [${c.slots.join(', ')}]`).join('; ')}`);
   return result;
 }
 
@@ -1235,9 +1206,11 @@ const locationLabels = new Map<string, string>([
 ]);
 
 // Опции времени для поиска кортов
+// День включает 18:00 (endHour 19 → цикл h < 19 даёт 12–18)
+// Вечер: 18:00–23:00 (18:00 в обоих — ок, при выборе обоих будет объединение)
 const timeOptions = [
   { id: 'morning', label: 'Утро (6:00-12:00)', startHour: 6, endHour: 12 },
-  { id: 'day', label: 'День (12:00-18:00)', startHour: 12, endHour: 18 },
+  { id: 'day', label: 'День (12:00-18:00)', startHour: 12, endHour: 19 },
   { id: 'evening', label: 'Вечер (18:00-00:00)', startHour: 18, endHour: 24 },
   { id: 'any', label: 'Не важно' }
 ];
@@ -6423,6 +6396,32 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // --------------- Воронеж: бронирование корта (Шаги 1–3) ---------------
 
+  // Кнопка «Назад» — возврат к списку клубов
+  if (data === 'voronezh_back_to_clubs') {
+    const searchState = searchStates.get(userId);
+    if (!searchState || searchState.sport !== SportType.TENNIS) {
+      await safeAnswerCallbackQuery(query.id, { text: USER_TEXTS.ERROR_SESSION_EXPIRED });
+      return;
+    }
+    const clubsWithSlots = await getVoronezhClubsWithSlots(
+      searchState.date,
+      searchState.selectedTimeSlots
+    );
+    const message = formatVoronezhSlotsMessage(clubsWithSlots, searchState.dateStr, searchState.date) +
+      '\n' + USER_TEXTS.BOOK_FOOTER;
+    const clubButtons: TelegramBot.InlineKeyboardButton[][] = clubsWithSlots.map(c => [
+      { text: c.clubName, callback_data: `voronezh_club_${c.clubId}` }
+    ]);
+    await safeEditMessageText(message, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: clubButtons }
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
   // Шаг 1: пользователь выбрал клуб — показываем слоты клуба кнопками
   if (data?.startsWith('voronezh_club_')) {
     const clubId = data.replace('voronezh_club_', '');
@@ -6472,6 +6471,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         }))
       );
     }
+    slotButtons.push([{ text: '◀️ Назад', callback_data: 'voronezh_back_to_clubs' }]);
     await safeEditMessageText(header + footer, {
       chat_id: chatId,
       message_id: query.message?.message_id,
