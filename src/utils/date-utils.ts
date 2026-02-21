@@ -46,6 +46,17 @@ export function getMoscowHour(date: Date | string): number {
  * Возвращает дату «сегодня» в указанном часовом поясе в формате YYYY-MM-DD.
  * @param timeZone IANA-часовой пояс (например Europe/Moscow).
  */
+/**
+ * Форматирует дату в формат "15 фев" (день + короткий месяц).
+ * @param dateKey Дата в формате YYYY-MM-DD
+ */
+export function formatDateShort(dateKey: string): string {
+  const date = new Date(dateKey);
+  const day = date.getDate();
+  const months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  return `${day} ${months[date.getMonth()]}`;
+}
+
 export function getTodayKeyInTimezone(timeZone: string): string {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone,

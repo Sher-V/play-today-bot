@@ -15,6 +15,8 @@
     "dev:upload:watch": "nodemon --watch src --ext ts --exec \"npm run build && npx functions-framework --target=uploadCoachMedia --source=dist/functions.js --port=8081\"",
     "dev:reminder": "NODE_ENV=development node -r dotenv/config node_modules/.bin/functions-framework --target=sendCoachReminder --source=dist/functions/send-coach-reminder.js --port=8082",
     "dev:reminder:watch": "nodemon --watch src --ext ts --exec \"npm run build && NODE_ENV=development node -r dotenv/config node_modules/.bin/functions-framework --target=sendCoachReminder --source=dist/functions/send-coach-reminder.js --port=8082\"",
+    "dev:yookassa": "npm run build && NODE_ENV=development node -r dotenv/config node_modules/.bin/functions-framework --target=yookassaWebhook --source=dist/serve-yookassa-only.js --port=8083",
+    "dev:yookassa:watch": "nodemon --watch src --ext ts --exec \"npm run build && NODE_ENV=development node -r dotenv/config node_modules/.bin/functions-framework --target=yookassaWebhook --source=dist/serve-yookassa-only.js --port=8083\"",
     "deploy": "npm run build && gcloud functions deploy playTodayBot --gen2 --runtime=nodejs20 --trigger-http --allow-unauthenticated --entry-point=telegramWebhook --set-env-vars BOT_TOKEN=$BOT_TOKEN --region=europe-west1 --source=.",
     "set-webhook": "curl -X POST \"https://api.telegram.org/bot$BOT_TOKEN/setWebhook\" -d \"url=$WEBHOOK_URL\"",
     "delete-webhook": "curl -X POST \"https://api.telegram.org/bot$BOT_TOKEN/deleteWebhook\"",

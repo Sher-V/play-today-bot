@@ -100,11 +100,14 @@ export const USER_TEXTS = {
     `Время: ${start}–${end} (${hours})`,
   BOOK_CONFIRM_PRICE: (price: number) => `Цена: ${price} ₽`,
   BOOK_CONFIRM_RESERVE: '⏳ Время зарезервировано, оплатите в течение 5 минут.',
-  BOOK_PAID_HEADER: '✅ Бронирование подтверждено!',
+  BOOK_ASK_NAME: '👤 Как вас зовут? (имя для бронирования)',
+  BOOK_ASK_PHONE: '📱 Введите номер телефона для бронирования (например, 89991234567 или +7 999 123 45 67):',
+  BOOK_PAID_HEADER: '✅ Оплата прошла успешно!',
   BOOK_PAID_CLUB: (name: string) => `🎾 ${name}`,
-  BOOK_PAID_TIME: (start: string, end: string, hours: string) =>
-    `🕒 ${start}–${end} (${hours})`,
+  BOOK_PAID_TIME: (date: string, start: string, end: string, hours: string) =>
+    `🕒 ${date} ${start}–${end} (${hours})`,
   BOOK_PAID_AMOUNT: (price: number) => `💳 Оплачено: ${price} ₽`,
   BOOK_PAID_FOOTER: 'Ждём вас на корте!',
+  BOOK_PAID_FOOTER_HINT: 'Найти свои бронирования можно в разделе Ещё → Мои бронирования',
 } as const;
 

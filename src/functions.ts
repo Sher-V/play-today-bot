@@ -9,3 +9,5 @@ export { uploadCoachMedia } from './functions/upload-coach-media';
 import './functions/send-coach-reminder';
 // Для cancelExpiredReservations используется functions-framework напрямую в файле
 import './functions/cancel-expired-reservations';
+// Вебхук ЮKassa для уведомлений payment.succeeded
+import './functions/yookassa-webhook';

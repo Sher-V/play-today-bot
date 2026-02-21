@@ -78,3 +78,81 @@ export async function createYooKassaPayment(
     return null;
   }
 }
+
+const YOOKASSA_REFUNDS_URL = 'https://api.yookassa.ru/v3/refunds';
+
+/**
+ * Создаёт возврат средств по успешному платежу.
+ * Деньги возвращаются на ту же карту, с которой была оплата.
+ * @param paymentId ID платежа в ЮKassa (yookassaPaymentId из резерва)
+ * @param amountRub Сумма возврата в рублях
+ * @param idempotenceKey Уникальный ключ (например refund_<reservationId>)
+ * @param description Описание возврата (опционально)
+ */
+export async function createYooKassaRefund(
+  paymentId: string,
+  amountRub: number,
+  idempotenceKey: string,
+  description?: string
+): Promise<{ refundId: string; status: string } | null> {
+  const shopId = process.env.YOOKASSA_SHOP_ID;
+  const secretKey = process.env.YOOKASSA_SECRET_KEY;
+  if (!shopId || !secretKey) {
+    console.error('[yookassa] YOOKASSA_SHOP_ID or YOOKASSA_SECRET_KEY not set');
+    return null;
+  }
+  const value = amountRub.toFixed(2);
+  const body: Record<string, unknown> = {
+    payment_id: paymentId,
+    amount: { value, currency: 'RUB' },
+  };
+  if (description) body.description = description;
+  const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
+  try {
+    const res = await fetch(YOOKASSA_REFUNDS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotence-Key': idempotenceKey,
+        Authorization: `Basic ${auth}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('[yookassa] createRefund API error', res.status, text);
+      return null;
+    }
+    const data = (await res.json()) as { id?: string; status?: string };
+    if (!data.id || !data.status) {
+      console.error('[yookassa] No id or status in refund response', data);
+      return null;
+    }
+    return { refundId: data.id, status: data.status };
+  } catch (error) {
+    console.error('[yookassa] createRefund error', error);
+    return null;
+  }
+}
+
+/**
+ * Получает статус платежа по ID (для fallback при возврате в бота без вебхука).
+ */
+export async function getYooKassaPaymentStatus(paymentId: string): Promise<{ status: string } | null> {
+  const shopId = process.env.YOOKASSA_SHOP_ID;
+  const secretKey = process.env.YOOKASSA_SECRET_KEY;
+  if (!shopId || !secretKey) return null;
+  const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
+  try {
+    const res = await fetch(`${YOOKASSA_API_URL}/${paymentId}`, {
+      method: 'GET',
+      headers: { Authorization: `Basic ${auth}` },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { status?: string };
+    return data.status ? { status: data.status } : null;
+  } catch (error) {
+    console.error('[yookassa] getPaymentStatus error', error);
+    return null;
+  }
+}

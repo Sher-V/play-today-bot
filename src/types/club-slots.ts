@@ -158,4 +158,8 @@ export interface VoronezhReservation {
   paidAt?: Date;
   /** ID платежа в ЮKassa (для вебхука payment.succeeded). */
   yookassaPaymentId?: string;
+  /** Телефон пользователя. */
+  phone?: string;
+  /** Имя пользователя для бронирования. */
+  name?: string;
 }

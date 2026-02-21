@@ -33,7 +33,7 @@ import { CITIES, canSelectCity, getCityByIndex, isMoscowCity, isVoronezhCity, DE
 import { getCourtPrice, getBotToken, isDev } from './utils/config-utils';
 import { getTodayKeyInTimezone } from './utils/date-utils';
 import { getRemoteConfigValue } from './utils/remote-config';
-import { createYooKassaPayment } from './utils/yookassa';
+import { createYooKassaPayment, createYooKassaRefund, getYooKassaPaymentStatus } from './utils/yookassa';
 import {
   CLUBS_COLLECTION,
   BOOKINGS_SUBCOLLECTION,
@@ -376,6 +376,7 @@ interface CoachMediaItem {
 
 interface UserProfile {
   name?: string;
+  phone?: string; // Телефон пользователя для бронирований
   city?: string; // Название города на русском (Москва, Воронеж)
   level?: string;
   districts?: string[];
@@ -490,6 +491,103 @@ const DEFAULT_PRICE_PER_HOUR = 2700;
 
 /** Время закрытия клуба (HH:MM). Занятие не должно заканчиваться позже. */
 const DEFAULT_CLUB_CLOSING_TIME = '24:00';
+
+/** Нормализует и валидирует российский номер: 10–11 цифр. Возвращает нормализованный (+7...) или null. */
+function normalizePhone(input: string): string | null {
+  const digits = input.replace(/\D/g, '');
+  if (digits.length === 10 && digits.startsWith('9')) {
+    return '+7' + digits;
+  }
+  if (digits.length === 11 && (digits.startsWith('7') || digits.startsWith('8'))) {
+    return '+7' + digits.slice(1);
+  }
+  return null;
+}
+
+/**
+ * Создаёт резерв, hold-бронь и показывает экран подтверждения.
+ * @param messageId — если передан, редактирует сообщение; иначе отправляет новое.
+ */
+async function doVoronezhConfirmation(
+  userId: number,
+  chatId: number,
+  state: VoronezhBookingState,
+  phone: string,
+  messageId?: number
+): Promise<void> {
+  const durationMinutes = state.selectedDurationMinutes!;
+  const [startH, startM] = state.selectedSlotStart!.split(':').map(Number);
+  const endMinutes = startH * 60 + (startM || 0) + durationMinutes;
+  const endH = Math.floor(endMinutes / 60);
+  const endM = endMinutes % 60;
+  const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+  const price = calculateBookingPrice(state.selectedSlotStart!, durationMinutes, state.pricing, state.date, state.pricePerHour);
+  const hoursStr = durationMinutes === 60 ? '1 час' : `${durationMinutes / 60} ч`;
+  const confirmText =
+    USER_TEXTS.BOOK_CONFIRM_HEADER + '\n\n' +
+    USER_TEXTS.BOOK_CONFIRM_CLUB(state.clubName) + '\n' +
+    USER_TEXTS.BOOK_CONFIRM_TIME(state.selectedSlotStart!, endTime, hoursStr) + '\n' +
+    USER_TEXTS.BOOK_CONFIRM_PRICE(price) + '\n\n' +
+    USER_TEXTS.BOOK_CONFIRM_RESERVE;
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  const reservationId = `voronezh_${userId}_${Date.now()}`;
+  const profile = await getUserProfile(userId);
+  const userName = profile?.name?.trim() || '';
+  const reservation: VoronezhReservation = {
+    id: reservationId,
+    userId,
+    chatId,
+    clubId: state.clubId,
+    clubName: state.clubName,
+    date: state.date,
+    slotStart: state.selectedSlotStart!,
+    durationMinutes,
+    price,
+    status: 'pending',
+    expiresAt,
+    phone,
+    ...(userName ? { name: userName } : {}),
+  };
+  await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).set(reservation);
+  const { Timestamp } = await import('@google-cloud/firestore');
+  const courts = await getCourtsForClub(state.clubId);
+  const courtId = courts.length > 0 ? courts[0].id : 'default';
+  const startDate = new Date(`${state.date}T${state.selectedSlotStart}:00${OFFSET_UTC3}`);
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+  const namePart = userName ? `${userName}, ` : '';
+  const userComment = `Пользователь из бота (${namePart}тел. ${phone})`;
+  const holdBooking = {
+    id: reservationId,
+    courtId,
+    type: 'one_time' as const,
+    startTime: Timestamp.fromDate(startDate),
+    endTime: Timestamp.fromDate(endDate),
+    comment: userComment,
+    status: 'hold' as const,
+    reservationId,
+  };
+  await firestore
+    .collection(CLUBS_COLLECTION)
+    .doc(state.clubId)
+    .collection(BOOKINGS_SUBCOLLECTION)
+    .doc(reservationId)
+    .set(holdBooking);
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: 'Оплатить', callback_data: `voronezh_pay_${reservationId}` }],
+      [{ text: '◀️ Назад', callback_data: `voronezh_back_from_confirm_${reservationId}` }],
+    ],
+  };
+  if (messageId) {
+    await safeEditMessageText(confirmText, {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: replyMarkup,
+    });
+  } else {
+    await getBot().sendMessage(chatId, confirmText, { reply_markup: replyMarkup });
+  }
+}
 
 /** Парсит время "HH:MM" или "H:MM" в минуты от полуночи. */
 function timeToMinutes(timeStr: string): number {
@@ -913,7 +1011,7 @@ function formatVoronezhSlotsMessage(
  */
 async function sendVoronezhBookingPaidNotification(
   chatId: number,
-  reservation: { clubName: string; slotStart: string; durationMinutes: number; price: number }
+  reservation: { clubName: string; date: string; slotStart: string; durationMinutes: number; price: number }
 ): Promise<void> {
   const endMinutes =
     reservation.slotStart.split(':').reduce((acc, part, i) => acc + (i === 0 ? Number(part) * 60 : Number(part)), 0) +
@@ -925,7 +1023,7 @@ async function sendVoronezhBookingPaidNotification(
   const text =
     USER_TEXTS.BOOK_PAID_HEADER + '\n\n' +
     USER_TEXTS.BOOK_PAID_CLUB(reservation.clubName) + '\n' +
-    USER_TEXTS.BOOK_PAID_TIME(reservation.slotStart, endTime, hoursStr) + '\n' +
+    USER_TEXTS.BOOK_PAID_TIME(reservation.date, reservation.slotStart, endTime, hoursStr) + '\n' +
     USER_TEXTS.BOOK_PAID_AMOUNT(reservation.price) + '\n\n' +
     USER_TEXTS.BOOK_PAID_FOOTER;
   await getBot().sendMessage(chatId, text);
@@ -1411,6 +1509,8 @@ interface VoronezhBookingState {
   closingTime?: string; // HH:MM — время закрытия клуба
   selectedSlotStart?: string; // после выбора времени
   selectedDurationMinutes?: number; // после выбора длительности
+  awaitingName?: boolean; // ожидаем ввод имени
+  awaitingPhone?: boolean; // ожидаем ввод телефона
 }
 const voronezhBookingStates = new Map<number, VoronezhBookingState>();
 
@@ -3529,6 +3629,32 @@ async function handleStart(msg: TelegramBot.Message) {
     const resDoc = await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).get();
     if (resDoc.exists) {
       const res = resDoc.data() as VoronezhReservation;
+      if (res.userId !== userId) {
+        // не свой резерв — не показываем детали
+      } else if (res.status === 'paid') {
+        // уже помечен как оплачен (вебхук сработал) — показываем успех
+      } else if (res.status === 'pending' && res.yookassaPaymentId) {
+        // Fallback для локального теста или если вебхук ещё не пришёл: проверяем статус в ЮKassa
+        const paymentStatus = await getYooKassaPaymentStatus(res.yookassaPaymentId);
+        if (paymentStatus?.status === 'succeeded') {
+          await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).update({
+            status: 'paid',
+            paidAt: new Date(),
+          });
+          try {
+            await firestore
+              .collection(CLUBS_COLLECTION)
+              .doc(res.clubId)
+              .collection(BOOKINGS_SUBCOLLECTION)
+              .doc(reservationId)
+              .update({ status: 'confirmed' });
+          } catch (_) {
+            // игнорируем
+          }
+          (res as VoronezhReservation).status = 'paid';
+        }
+      }
+
       if (res.userId === userId && res.status === 'paid') {
         const [startH, startM] = (res.slotStart || '0:0').split(':').map(Number);
         const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
@@ -3555,16 +3681,20 @@ async function handleStart(msg: TelegramBot.Message) {
         } catch (_) {
           // игнорируем
         }
+        const nameLine = res.name?.trim() ? `👤 ${res.name.trim()}\n` : '';
         const successText =
-          `✅ *Бронирование подтверждено*\n\n` +
+          USER_TEXTS.BOOK_PAID_HEADER + '\n\n' +
+          nameLine +
           `📍 ${res.clubName}, ${courtName}\n` +
-          `🕒 ${res.date} ${res.slotStart}–${endTime} (${res.durationMinutes} мин)\n\n` +
-          `Удачной тренировки! 🎾\n\n` +
-          `Посмотреть свои бронирования: *Ещё* → *Мои бронирования*`;
-        const mainMenuKeyboard = await getMainMenuKeyboard();
+          `🕒 ${formatDateShort(res.date)} ${res.slotStart}–${endTime} (${res.durationMinutes} мин)\n\n` +
+          USER_TEXTS.BOOK_PAID_AMOUNT(res.price) + '\n\n' +
+          USER_TEXTS.BOOK_PAID_FOOTER + '\n\n' +
+          USER_TEXTS.BOOK_PAID_FOOTER_HINT;
         await getBot().sendMessage(chatId, successText, {
           parse_mode: 'Markdown',
-          reply_markup: { keyboard: mainMenuKeyboard, resize_keyboard: true }
+          reply_markup: {
+            inline_keyboard: [[{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]],
+          }
         });
         return;
       }
@@ -4061,6 +4191,55 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   // Пропускаем другие команды
   if (text?.startsWith('/')) return;
+
+  // Ожидаем ввод имени для бронирования корта (Воронеж)
+  if (userId && text) {
+    const state = voronezhBookingStates.get(userId);
+    if (state?.awaitingName && state.selectedSlotStart && state.selectedDurationMinutes) {
+      const name = text.trim();
+      if (!name) {
+        await getBot().sendMessage(chatId, '❌ Введите имя (не пустое).');
+        return;
+      }
+      state.awaitingName = false;
+      voronezhBookingStates.set(userId, state);
+      const profile = await getUserProfile(userId) || {};
+      profile.name = name;
+      await saveUserProfile(userId, profile);
+      const existingPhone = profile.phone;
+      if (!existingPhone) {
+        state.awaitingPhone = true;
+        voronezhBookingStates.set(userId, state);
+        await getBot().sendMessage(chatId, USER_TEXTS.BOOK_ASK_PHONE, {
+          reply_markup: {
+            inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'voronezh_back_from_phone' }]],
+          },
+        });
+        return;
+      }
+      await doVoronezhConfirmation(userId, chatId, state, existingPhone);
+      return;
+    }
+  }
+
+  // Ожидаем ввод телефона для бронирования корта (Воронеж)
+  if (userId && text) {
+    const state = voronezhBookingStates.get(userId);
+    if (state?.awaitingPhone && state.selectedSlotStart && state.selectedDurationMinutes) {
+      const phone = normalizePhone(text);
+      if (!phone) {
+        await getBot().sendMessage(chatId, '❌ Введите корректный номер телефона (10 или 11 цифр, например 89991234567):');
+        return;
+      }
+      state.awaitingPhone = false;
+      voronezhBookingStates.set(userId, state);
+      const profile = await getUserProfile(userId) || {};
+      profile.phone = phone;
+      await saveUserProfile(userId, profile);
+      await doVoronezhConfirmation(userId, chatId, state, phone);
+      return;
+    }
+  }
 
   // Проверяем, это ответ на вопрос "Как к тебе обращаться?"
   if (msg.reply_to_message?.text === USER_TEXTS.ASK_NAME && userId && text) {
@@ -6782,7 +6961,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Шаг 2: пользователь выбрал длительность — подтверждение и кнопка «Оплатить»
+  // Шаг 2: пользователь выбрал длительность — запрос имени (если нет), затем телефона (если нет) или подтверждение
   if (data?.startsWith('voronezh_duration_')) {
     const durationMinutes = parseInt(data.replace('voronezh_duration_', ''), 10);
     const state = voronezhBookingStates.get(userId);
@@ -6791,74 +6970,197 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     state.selectedDurationMinutes = durationMinutes;
+    state.awaitingName = false;
+    state.awaitingPhone = false;
     voronezhBookingStates.set(userId, state);
-    const [startH, startM] = state.selectedSlotStart.split(':').map(Number);
-    const endMinutes = startH * 60 + (startM || 0) + durationMinutes;
-    const endH = Math.floor(endMinutes / 60);
-    const endM = endMinutes % 60;
-    const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
-    const price = calculateBookingPrice(state.selectedSlotStart, durationMinutes, state.pricing, state.date, state.pricePerHour);
-    const hoursStr = durationMinutes === 60 ? '1 час' : `${durationMinutes / 60} ч`;
-    const confirmText =
-      USER_TEXTS.BOOK_CONFIRM_HEADER + '\n\n' +
-      USER_TEXTS.BOOK_CONFIRM_CLUB(state.clubName) + '\n' +
-      USER_TEXTS.BOOK_CONFIRM_TIME(state.selectedSlotStart, endTime, hoursStr) + '\n' +
-      USER_TEXTS.BOOK_CONFIRM_PRICE(price) + '\n\n' +
-      USER_TEXTS.BOOK_CONFIRM_RESERVE;
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-    const reservationId = `voronezh_${userId}_${Date.now()}`;
-    const reservation: VoronezhReservation = {
-      id: reservationId,
-      userId,
-      chatId,
-      clubId: state.clubId,
-      clubName: state.clubName,
-      date: state.date,
-      slotStart: state.selectedSlotStart,
-      durationMinutes,
-      price,
-      status: 'pending',
-      expiresAt,
+    const profile = await getUserProfile(userId);
+    const existingName = profile?.name?.trim();
+    const existingPhone = profile?.phone;
+    if (!existingName) {
+      state.awaitingName = true;
+      voronezhBookingStates.set(userId, state);
+      await safeEditMessageText(USER_TEXTS.BOOK_ASK_NAME, {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'voronezh_back_from_name' }]],
+        },
+      });
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    if (!existingPhone) {
+      state.awaitingPhone = true;
+      voronezhBookingStates.set(userId, state);
+      await safeEditMessageText(USER_TEXTS.BOOK_ASK_PHONE, {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        reply_markup: {
+          inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'voronezh_back_from_phone' }]],
+        },
+      });
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    await doVoronezhConfirmation(userId, chatId, state, existingPhone, query.message?.message_id);
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // «Назад» с шага ввода имени — возврат к выбору длительности
+  if (data === 'voronezh_back_from_name') {
+    const state = voronezhBookingStates.get(userId);
+    if (!state || !state.selectedSlotStart) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Сессия истекла.' });
+      return;
+    }
+    state.awaitingName = false;
+    voronezhBookingStates.set(userId, state);
+    const slotTimeName = state.selectedSlotStart;
+    const [startHName, startMName] = slotTimeName.split(':').map(Number);
+    const slotStartMinutesName = startHName * 60 + (startMName ?? 0);
+    const closingTimeStrName = state.closingTime ?? DEFAULT_CLUB_CLOSING_TIME;
+    const [closeHName, closeMName] = closingTimeStrName.trim().split(':').map(Number);
+    const closingMinutesName = (closeHName ?? 24) * 60 + (closeMName ?? 0);
+    const sortedSlotsName = [...state.freeSlots].sort((a, b) => {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      return toM(a) - toM(b);
+    });
+    const idxName = sortedSlotsName.indexOf(slotTimeName);
+    let contiguousCountName = 0;
+    if (idxName >= 0) {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      for (let i = idxName; i < sortedSlotsName.length; i++) {
+        const expected = toM(slotTimeName) + contiguousCountName * 30;
+        if (toM(sortedSlotsName[i]) === expected) contiguousCountName++;
+        else break;
+      }
+    }
+    const maxDurationFromFreeRangeName = contiguousCountName * 30;
+    const MAX_BOOKING_DURATION_MINUTES_NAME = 180;
+    const maxDurationMinutesName = Math.min(closingMinutesName - slotStartMinutesName, maxDurationFromFreeRangeName, MAX_BOOKING_DURATION_MINUTES_NAME);
+    const durationsName: number[] = [];
+    for (let d = 60; d <= maxDurationMinutesName; d += 30) durationsName.push(d);
+    const courtsName = await getCourtsForClub(state.clubId);
+    const slotStartDateName = new Date(`${state.date}T${slotTimeName}${OFFSET_UTC3}`);
+    const availableDurationsName: number[] = [];
+    const toMsName = (t: ClubBooking['startTime']) =>
+      t && typeof (t as { toDate?: () => Date }).toDate === 'function'
+        ? (t as { toDate: () => Date }).toDate().getTime()
+        : new Date((t as unknown as { _seconds: number })._seconds * 1000).getTime();
+    for (const dur of durationsName) {
+      if (dur > maxDurationMinutesName) continue;
+      const slotEndMsName = slotStartDateName.getTime() + dur * 60 * 1000;
+      if (courtsName.length === 0) {
+        const bookingsName = await getBookingsForClubOnDate(state.clubId, state.date);
+        const occupiedName = bookingsName.map(b => ({ start: toMsName(b.startTime), end: toMsName(b.endTime) }));
+        if (!occupiedName.some(o => o.start < slotEndMsName && o.end > slotStartDateName.getTime())) availableDurationsName.push(dur);
+      } else {
+        for (const court of courtsName) {
+          const bookingsName = await getBookingsForCourtOnDate(state.clubId, court.id, state.date);
+          const occupiedName = bookingsName.map(b => ({ start: toMsName(b.startTime), end: toMsName(b.endTime) }));
+          if (!occupiedName.some(o => o.start < slotEndMsName && o.end > slotStartDateName.getTime())) {
+            availableDurationsName.push(dur);
+            break;
+          }
+        }
+      }
+    }
+    const durationLabelsName: Record<number, string> = {
+      60: '1 час', 90: '1,5 часа', 120: '2 часа', 150: '2,5 часа',
+      180: '3 часа', 210: '3,5 часа', 240: '4 часа',
     };
-    await firestore
-      .collection(RESERVATIONS_COLLECTION)
-      .doc(reservationId)
-      .set(reservation);
-    // Резервируем слот в клубе сразу (статус hold)
-    const { Timestamp } = await import('@google-cloud/firestore');
-    const courts = await getCourtsForClub(state.clubId);
-    const courtId = courts.length > 0 ? courts[0].id : 'default';
-    const startDate = new Date(`${state.date}T${state.selectedSlotStart}:00${OFFSET_UTC3}`);
-    const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
-    const username = query.from?.username;
-    const userComment = username
-      ? `Пользователь из бота (@${username})`
-      : `Пользователь из бота (userId: ${userId})`;
-    const holdBooking = {
-      id: reservationId,
-      courtId,
-      type: 'one_time' as const,
-      startTime: Timestamp.fromDate(startDate),
-      endTime: Timestamp.fromDate(endDate),
-      comment: userComment,
-      status: 'hold' as const,
-      reservationId,
-    };
-    await firestore
-      .collection(CLUBS_COLLECTION)
-      .doc(state.clubId)
-      .collection(BOOKINGS_SUBCOLLECTION)
-      .doc(reservationId)
-      .set(holdBooking);
-    await safeEditMessageText(confirmText, {
+    const durationButtonsName: TelegramBot.InlineKeyboardButton[][] = availableDurationsName.length > 0
+      ? [
+          availableDurationsName.map(d => ({ text: durationLabelsName[d] ?? `${d / 60} ч`, callback_data: `voronezh_duration_${d}` })),
+          [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }],
+        ]
+      : [[{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }]];
+    await safeEditMessageText(`Выберите длительность бронирования (начало ${slotTimeName}):`, {
       chat_id: chatId,
       message_id: query.message?.message_id,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: 'Оплатить', callback_data: `voronezh_pay_${reservationId}` }],
-          [{ text: '◀️ Назад', callback_data: `voronezh_back_from_confirm_${reservationId}` }],
-        ],
-      },
+      reply_markup: { inline_keyboard: durationButtonsName },
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // «Назад» с шага ввода телефона — возврат к выбору длительности
+  if (data === 'voronezh_back_from_phone') {
+    const state = voronezhBookingStates.get(userId);
+    if (!state || !state.selectedSlotStart) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Сессия истекла.' });
+      return;
+    }
+    state.awaitingPhone = false;
+    voronezhBookingStates.set(userId, state);
+    const slotTime = state.selectedSlotStart;
+    const [startH, startM] = slotTime.split(':').map(Number);
+    const slotStartMinutes = startH * 60 + (startM ?? 0);
+    const closingTimeStr = state.closingTime ?? DEFAULT_CLUB_CLOSING_TIME;
+    const [closeH, closeM] = closingTimeStr.trim().split(':').map(Number);
+    const closingMinutes = (closeH ?? 24) * 60 + (closeM ?? 0);
+    const sortedSlots = [...state.freeSlots].sort((a, b) => {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      return toM(a) - toM(b);
+    });
+    const idx = sortedSlots.indexOf(slotTime);
+    let contiguousCount = 0;
+    if (idx >= 0) {
+      const toM = (t: string) => { const [h, m] = t.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+      for (let i = idx; i < sortedSlots.length; i++) {
+        const expected = toM(slotTime) + contiguousCount * 30;
+        if (toM(sortedSlots[i]) === expected) contiguousCount++;
+        else break;
+      }
+    }
+    const maxDurationFromFreeRange = contiguousCount * 30;
+    const MAX_BOOKING_DURATION_MINUTES = 180;
+    const maxDurationMinutes = Math.min(closingMinutes - slotStartMinutes, maxDurationFromFreeRange, MAX_BOOKING_DURATION_MINUTES);
+    const durations: number[] = [];
+    for (let d = 60; d <= maxDurationMinutes; d += 30) durations.push(d);
+    const courts = await getCourtsForClub(state.clubId);
+    const slotStartDate = new Date(`${state.date}T${slotTime}${OFFSET_UTC3}`);
+    const availableDurations: number[] = [];
+    const toMs = (t: ClubBooking['startTime']) =>
+      t && typeof (t as { toDate?: () => Date }).toDate === 'function'
+        ? (t as { toDate: () => Date }).toDate().getTime()
+        : new Date((t as unknown as { _seconds: number })._seconds * 1000).getTime();
+    for (const dur of durations) {
+      if (dur > maxDurationMinutes) continue;
+      const slotEndMs = slotStartDate.getTime() + dur * 60 * 1000;
+      const slotStartMs = slotStartDate.getTime();
+      let freeForDuration = false;
+      if (courts.length === 0) {
+        const bookings = await getBookingsForClubOnDate(state.clubId, state.date);
+        const occupied = bookings.map(b => ({ start: toMs(b.startTime), end: toMs(b.endTime) }));
+        freeForDuration = !occupied.some(o => o.start < slotEndMs && o.end > slotStartMs);
+      } else {
+        for (const court of courts) {
+          const bookings = await getBookingsForCourtOnDate(state.clubId, court.id, state.date);
+          const occupied = bookings.map(b => ({ start: toMs(b.startTime), end: toMs(b.endTime) }));
+          if (!occupied.some(o => o.start < slotEndMs && o.end > slotStartMs)) {
+            freeForDuration = true;
+            break;
+          }
+        }
+      }
+      if (freeForDuration) availableDurations.push(dur);
+    }
+    const durationLabels: Record<number, string> = {
+      60: '1 час', 90: '1,5 часа', 120: '2 часа', 150: '2,5 часа',
+      180: '3 часа', 210: '3,5 часа', 240: '4 часа',
+    };
+    const durationButtons: TelegramBot.InlineKeyboardButton[][] = availableDurations.length > 0
+      ? [
+          availableDurations.map(d => ({ text: durationLabels[d] ?? `${d / 60} ч`, callback_data: `voronezh_duration_${d}` })),
+          [{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }],
+        ]
+      : [[{ text: '◀️ Назад', callback_data: 'voronezh_back_to_slots' }]];
+    await safeEditMessageText(`Выберите длительность бронирования (начало ${slotTime}):`, {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: { inline_keyboard: durationButtons },
     });
     await safeAnswerCallbackQuery(query.id);
     return;
@@ -7157,11 +7459,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   // Мои бронирования (только для Воронежа)
   if (data === 'my_bookings') {
     coachRegistrationStates.delete(userId);
+    const todayKey = getTodayKeyInTimezone(DEFAULT_TIMEZONE);
     const snapshot = await firestore
       .collection(RESERVATIONS_COLLECTION)
       .where('userId', '==', userId)
       .get();
-    const reservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VoronezhReservation & { id: string }));
+    const allReservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VoronezhReservation & { id: string }));
+    const reservations = allReservations.filter(
+      r => r.status !== 'canceled' && (r.date || '') >= todayKey
+    );
     reservations.sort((a, b) => {
       const d = a.date.localeCompare(b.date);
       if (d !== 0) return d;
@@ -7189,10 +7495,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         const endTime = `${String(endH).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
         const label = statusLabel[r.status] ?? r.status;
         text += `📍 ${r.clubName}\n`;
-        text += `🕒 ${r.date} ${r.slotStart}–${endTime} (${r.durationMinutes} мин)\n`;
+        text += `🕒 ${formatDateShort(r.date)} ${r.slotStart}–${endTime} (${r.durationMinutes} мин)\n`;
         text += `${label} · ${r.price} ₽\n\n`;
         if (r.status === 'pending' || r.status === 'paid') {
-          keyboard.push([{ text: `❌ Отменить бронь (${r.clubName}, ${r.date} ${r.slotStart})`, callback_data: `cancel_booking_${r.id}` }]);
+          keyboard.push([{ text: `❌ ${formatDateShort(r.date)} ${r.slotStart} ${r.clubName}`, callback_data: `cancel_booking_${r.id}` }]);
         }
       }
     }
@@ -7208,8 +7514,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Отмена бронирования
-  if (data?.startsWith('cancel_booking_')) {
+  // Запрос подтверждения отмены бронирования
+  if (data?.startsWith('cancel_booking_') && !data.startsWith('cancel_booking_confirm_')) {
     const reservationId = data.replace('cancel_booking_', '');
     const doc = await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).get();
     if (!doc.exists) {
@@ -7225,6 +7531,54 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       await safeAnswerCallbackQuery(query.id, { text: 'Бронирование уже отменено или истекло.' });
       return;
     }
+    await safeEditMessageText('Вы уверены, что хотите отменить бронирование?', {
+      chat_id: chatId,
+      message_id: query.message?.message_id,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'Да', callback_data: `cancel_booking_confirm_${reservationId}` }],
+          [{ text: 'Нет', callback_data: 'my_bookings' }],
+        ],
+      },
+    });
+    await safeAnswerCallbackQuery(query.id);
+    return;
+  }
+
+  // Подтверждение отмены бронирования (Да)
+  if (data?.startsWith('cancel_booking_confirm_')) {
+    const reservationId = data.replace('cancel_booking_confirm_', '');
+    const doc = await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).get();
+    if (!doc.exists) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Бронирование не найдено.' });
+      return;
+    }
+    const res = doc.data() as VoronezhReservation;
+    if (res.userId !== userId) {
+      await safeAnswerCallbackQuery(query.id, { text: 'Это не ваше бронирование.' });
+      return;
+    }
+    if (res.status === 'canceled' || res.status === 'expired') {
+      await safeAnswerCallbackQuery(query.id, { text: 'Бронирование уже отменено или истекло.' });
+      return;
+    }
+    let refundResult: string | null = null;
+    if (res.status === 'paid' && res.yookassaPaymentId) {
+      const refund = await createYooKassaRefund(
+        res.yookassaPaymentId,
+        res.price,
+        `refund_${reservationId}`,
+        `Возврат за отмену бронирования: ${res.clubName}, ${res.date} ${res.slotStart}`
+      );
+      if (refund) {
+        refundResult = 'succeeded';
+      } else {
+        await safeAnswerCallbackQuery(query.id, {
+          text: 'Не удалось создать возврат. Обратитесь в поддержку для ручного возврата средств.',
+        });
+        return;
+      }
+    }
     await firestore.collection(RESERVATIONS_COLLECTION).doc(reservationId).update({ status: 'canceled' });
     try {
       await firestore
@@ -7236,51 +7590,16 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     } catch (e) {
       console.error('[cancel_booking] club booking update', reservationId, e);
     }
-    await safeAnswerCallbackQuery(query.id, { text: 'Бронирование отменено.' });
-    // Обновляем экран «Мои бронирования» — повторно показываем список
-    const snapshot = await firestore
-      .collection(RESERVATIONS_COLLECTION)
-      .where('userId', '==', userId)
-      .get();
-    const reservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VoronezhReservation & { id: string }));
-    reservations.sort((a, b) => {
-      const d = a.date.localeCompare(b.date);
-      if (d !== 0) return d;
-      return (a.slotStart || '').localeCompare(b.slotStart || '');
-    });
-    const statusLabel: Record<string, string> = {
-      pending: '⏳ Ожидает оплаты',
-      paid: '✅ Оплачено',
-      expired: '❌ Истекло',
-      canceled: 'Отменено'
-    };
-    let listText = '📅 *Мои бронирования*\n\n';
-    const listKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
-    if (reservations.length === 0) {
-      listText += 'У вас пока нет бронирований.';
-    } else {
-      for (const r of reservations) {
-        const [startH, startM] = (r.slotStart || '0:0').split(':').map(Number);
-        const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
-        const endMinutes = startMinutes + (r.durationMinutes || 0);
-        const endH = Math.floor(endMinutes / 60);
-        const endMin = endMinutes % 60;
-        const endTime = `${String(endH).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
-        const label = statusLabel[r.status] ?? r.status;
-        listText += `📍 ${r.clubName}\n`;
-        listText += `🕒 ${r.date} ${r.slotStart}–${endTime} (${r.durationMinutes} мин)\n`;
-        listText += `${label} · ${r.price} ₽\n\n`;
-        if (r.status === 'pending' || r.status === 'paid') {
-          listKeyboard.push([{ text: `❌ Отменить бронь (${r.clubName}, ${r.date} ${r.slotStart})`, callback_data: `cancel_booking_${r.id}` }]);
-        }
-      }
-    }
-    listKeyboard.push([{ text: '◀️ Назад в Еще', callback_data: 'more_menu' }]);
-    await safeEditMessageText(listText, {
+    const cancelMessage = refundResult
+      ? 'Бронь отменена и заявка на возврат оформлена, ожидайте поступления средств.'
+      : 'Бронирование отменено.';
+    await safeAnswerCallbackQuery(query.id);
+    await safeEditMessageText(cancelMessage, {
       chat_id: chatId,
       message_id: query.message?.message_id,
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: listKeyboard }
+      reply_markup: {
+        inline_keyboard: [[{ text: '◀️ Назад в Еще', callback_data: 'more_menu' }]],
+      },
     });
     return;
   }
