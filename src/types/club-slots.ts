@@ -17,6 +17,9 @@ export const COURTS_SUBCOLLECTION = 'courts';
 /** Подколлекция броней внутри клуба: clubs/{clubId}/bookings/{bookingId} */
 export const BOOKINGS_SUBCOLLECTION = 'bookings';
 
+/** Подколлекция клиентов клуба: clubs/{clubId}/clients/{clientId} */
+export const CLIENTS_SUBCOLLECTION = 'clients';
+
 /** Коллекция резервов (бронирований) для клубов. */
 export const RESERVATIONS_COLLECTION = 'voronezhReservations';
 
@@ -77,6 +80,17 @@ export interface Court {
   updatedAt?: Date;
 }
 
+// ============ Клиент клуба ============
+
+export interface ClubClient {
+  id: string;
+  name: string;
+  /** Контакт: телефон, Telegram, email. Может быть заполнен вручную в карточке клиента или из бота. */
+  contact?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 // ============ Бронь ============
 
 export interface ClubBooking {
@@ -106,6 +120,10 @@ export interface ClubBooking {
   status?: 'hold' | 'confirmed' | 'canceled';
   /** ID в voronezhReservations (для связки с оплатой). */
   reservationId?: string;
+  /** ID документа в подколлекции clubs/{clubId}/clients. */
+  clientId?: string;
+  /** ФИО клиента (для отображения). */
+  clientName?: string;
 }
 
 // ============ Пути в Firestore ============
@@ -123,6 +141,11 @@ export function courtPath(clubId: string, courtId: string): string {
 /** Путь к документу брони. */
 export function bookingPath(clubId: string, bookingId: string): string {
   return `${CLUBS_COLLECTION}/${clubId}/${BOOKINGS_SUBCOLLECTION}/${bookingId}`;
+}
+
+/** Путь к документу клиента клуба. */
+export function clientPath(clubId: string, clientId: string): string {
+  return `${CLUBS_COLLECTION}/${clubId}/${CLIENTS_SUBCOLLECTION}/${clientId}`;
 }
 
 // ============ Рекомендуемые составные индексы Firestore ============

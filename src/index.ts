@@ -37,6 +37,7 @@ import { createYooKassaPayment, createYooKassaRefund, getYooKassaPaymentStatus }
 import {
   CLUBS_COLLECTION,
   BOOKINGS_SUBCOLLECTION,
+  CLIENTS_SUBCOLLECTION,
   COURTS_SUBCOLLECTION,
   RESERVATIONS_COLLECTION,
   type Club,
@@ -505,6 +506,38 @@ function normalizePhone(input: string): string | null {
 }
 
 /**
+ * Возвращает клиента клуба по имени; если такого нет — создаёт документ в clubs/{clubId}/clients.
+ * При передаче contact записывает/обновляет контакт (телефон из бота и т.д.).
+ * @returns { clientId, clientName } или null, если имя пустое.
+ */
+async function ensureClubClient(clubId: string, clientName: string, contact?: string): Promise<{ clientId: string; clientName: string } | null> {
+  const name = clientName.trim();
+  if (!name) return null;
+  const clientsRef = firestore.collection(CLUBS_COLLECTION).doc(clubId).collection(CLIENTS_SUBCOLLECTION);
+  const existing = await clientsRef.where('name', '==', name).limit(1).get();
+  const now = new Date();
+  if (!existing.empty) {
+    const doc = existing.docs[0];
+    if (contact !== undefined && contact.trim()) {
+      await doc.ref.update({ contact: contact.trim(), updatedAt: now });
+    }
+    return { clientId: doc.id, clientName: (doc.data() as { name: string }).name };
+  }
+  const newRef = clientsRef.doc();
+  const data: Record<string, unknown> = {
+    id: newRef.id,
+    name,
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (contact !== undefined && contact.trim()) {
+    data.contact = contact.trim();
+  }
+  await newRef.set(data);
+  return { clientId: newRef.id, clientName: name };
+}
+
+/**
  * Создаёт резерв, hold-бронь и показывает экран подтверждения.
  * @param messageId — если передан, редактирует сообщение; иначе отправляет новое.
  */
@@ -556,16 +589,23 @@ async function doVoronezhConfirmation(
   const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
   const namePart = userName ? `${userName}, ` : '';
   const userComment = `Пользователь из бота (${namePart}тел. ${phone})`;
-  const holdBooking = {
+  const client = userName ? await ensureClubClient(state.clubId, userName, phone) : null;
+  const holdBooking: Record<string, unknown> = {
     id: reservationId,
     courtId,
     type: 'one_time' as const,
     startTime: Timestamp.fromDate(startDate),
     endTime: Timestamp.fromDate(endDate),
     comment: userComment,
+    firstSessionDate: null,
+    lastSessionDate: null,
     status: 'hold' as const,
     reservationId,
   };
+  if (client) {
+    holdBooking.clientId = client.clientId;
+    holdBooking.clientName = client.clientName;
+  }
   await firestore
     .collection(CLUBS_COLLECTION)
     .doc(state.clubId)
