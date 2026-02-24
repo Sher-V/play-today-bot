@@ -4304,7 +4304,7 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   // Проверяем, это ответ на вопрос "Как вас зовут?" при регистрации тренера
   if (userId && text) {
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     const currentStep = coachRegistrationStates.get(userId);
     
     if (isNotCommand && currentStep === CoachRegistrationStep.NAME) {
@@ -4328,7 +4328,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Проверяем, это ответ на вопрос о цене индивидуальной тренировки
   if (userId && text) {
     const currentStep = coachRegistrationStates.get(userId);
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     
     if (isNotCommand && currentStep === CoachRegistrationStep.PRICE_INDIVIDUAL) {
       // Проверяем, что введено только целое число
@@ -4368,7 +4368,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Проверяем, это ответ на вопрос о цене сплит тренировки
   if (userId && text) {
     const currentStep = coachRegistrationStates.get(userId);
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     
     if (isNotCommand && currentStep === CoachRegistrationStep.PRICE_SPLIT) {
       // Проверяем, что введено только целое число
@@ -4408,7 +4408,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Проверяем, это ответ на вопрос о цене групповой тренировки
   if (userId && text) {
     const currentStep = coachRegistrationStates.get(userId);
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     
     if (isNotCommand && currentStep === CoachRegistrationStep.PRICE_GROUP) {
       // Проверяем, что введено только целое число
@@ -4447,7 +4447,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Проверяем, это ответ на вопрос о тренере
   if (userId && text) {
     const currentStep = coachRegistrationStates.get(userId);
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     
     if (isNotCommand && currentStep === CoachRegistrationStep.ABOUT) {
       // Проверяем длину текста
@@ -4501,7 +4501,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Обработка редактирования профиля тренера
   if (userId && text) {
     const editStep = coachEditStates.get(userId);
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     
     // Редактирование имени
     if (isNotCommand && editStep === CoachEditStep.NAME) {
@@ -4606,7 +4606,7 @@ async function handleMessage(msg: TelegramBot.Message) {
   // Обработка шагов создания групповой тренировки
   if (userId && text) {
     const currentStep = groupTrainingStates.get(userId);
-    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|⚙️|💬)/);
+    const isNotCommand = !text.startsWith('/') && !text.match(/^(🎾|🏓|👤|💬|👥|⚙️)/);
     
     // Шаг 1: Имя тренера (только если нет профиля тренера)
     if (isNotCommand && currentStep === GroupTrainingStep.TRAINER_NAME) {
@@ -5300,56 +5300,68 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       await getBot().sendMessage(chatId, USER_TEXTS.FEEDBACK);
       break;
-    case '👥 Найти группу':
-      // Сбрасываем состояние заполнения анкеты тренера
-      if (userId) {
-        coachRegistrationStates.delete(userId);
-        groupTrainingStates.delete(userId);
-        groupTrainingDrafts.delete(userId);
-      }
-      
-      // Отслеживаем клик на текстовую кнопку
-      if (userId) {
-        trackButtonClick({
-          userId,
-          userName: msg.from?.first_name || msg.from?.username || undefined,
-          chatId,
-          buttonType: 'text',
-          buttonId: text,
-          buttonLabel: text,
-          sessionId: generateSessionId(userId),
-          context: {
-            command: 'find_group',
-            username: msg.from?.username,
-            languageCode: msg.from?.language_code,
-          },
-        }).catch(err => {
-          console.error('Error tracking button click:', err);
+    case '👥 Найти группу': {
+      try {
+        // Сбрасываем состояние заполнения анкеты тренера
+        if (userId) {
+          coachRegistrationStates.delete(userId);
+          groupTrainingStates.delete(userId);
+          groupTrainingDrafts.delete(userId);
+        }
+
+        // Отслеживаем клик на текстовую кнопку
+        if (userId) {
+          trackButtonClick({
+            userId,
+            userName: msg.from?.first_name || msg.from?.username || undefined,
+            chatId,
+            buttonType: 'text',
+            buttonId: text,
+            buttonLabel: text,
+            sessionId: generateSessionId(userId),
+            context: {
+              command: 'find_group',
+              username: msg.from?.username,
+              languageCode: msg.from?.language_code,
+            },
+          }).catch(err => {
+            console.error('Error tracking button click:', err);
+          });
+        }
+
+        // Формируем ссылку на Mini App с параметрами пользователя (dev — отдельный хост)
+        const miniappBaseUrl = isDev ? 'https://flight-space-surely-relaxation.trycloudflare.com/' : 'https://play-today-miniapp.web.app/';
+        const miniappParams = new URLSearchParams();
+        if (userId) miniappParams.set('userId', String(userId));
+        const tgUsername = msg.from?.username;
+        if (tgUsername) miniappParams.set('username', tgUsername);
+        const miniappUrl = miniappParams.toString() ? `${miniappBaseUrl}?${miniappParams.toString()}` : miniappBaseUrl;
+        // Telegram принимает web_app только по HTTPS; для localhost используем обычную ссылку, иначе sendMessage падает
+        const isHttps = miniappBaseUrl.startsWith('https://');
+        const button = isHttps
+          ? { text: '👥 Открыть подбор группы', web_app: { url: miniappUrl } }
+          : { text: '👥 Открыть подбор группы', url: miniappUrl };
+
+        await getBot().sendMessage(chatId, 'Подбор группы проходит в интерактивном формате. Нажми кнопку ниже, чтобы открыть в приложении.', {
+          reply_markup: {
+            inline_keyboard: [[button]]
+          }
+        });
+      } catch (err) {
+        console.error('[find_group] Error:', err);
+        const miniappBaseUrl = isDev ? 'https://flight-space-surely-relaxation.trycloudflare.com/' : 'https://play-today-miniapp.web.app/';
+        const miniappParams = new URLSearchParams();
+        if (userId) miniappParams.set('userId', String(userId));
+        if (msg.from?.username) miniappParams.set('username', msg.from.username);
+        const miniappUrl = miniappParams.toString() ? `${miniappBaseUrl}?${miniappParams.toString()}` : miniappBaseUrl;
+        await getBot().sendMessage(chatId, 'Подбор группы проходит в интерактивном формате. Нажми кнопку ниже, чтобы открыть в приложении.', {
+          reply_markup: {
+            inline_keyboard: [[{ text: '👥 Открыть подбор группы', url: miniappUrl }]]
+          }
         });
       }
-      
-      // Получаем все активные групповые тренировки и чередуем по тренерам
-      const rawTrainings = await getAllActiveGroupTrainings();
-      const allTrainings = interleaveGroupTrainingsByTrainer(rawTrainings);
-      
-      if (allTrainings.length === 0) {
-        await getBot().sendMessage(chatId, 
-          'К сожалению, сейчас нет активных групповых тренировок.\n\nПопробуйте позже или создайте свою группу!',
-          {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
-                [{ text: '◀️ Назад', callback_data: 'action_home' }]
-              ]
-            }
-          }
-        );
-        return;
-      }
-      
-      // Отображаем первую страницу
-      await showGroupTrainingsPage(chatId, allTrainings, 1);
       break;
+    }
       
     case '👤 Найти тренера':
       // Сбрасываем состояние заполнения анкеты тренера
@@ -9721,132 +9733,43 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Обработка создания групповой тренировки
+  // Обработка создания групповой тренировки — открываем Mini App
   if (data === 'group_training_create') {
-    // Сбрасываем предыдущее состояние
     groupTrainingStates.delete(userId);
     groupTrainingDrafts.delete(userId);
-    
-    // Проверяем, есть ли у пользователя профиль тренера
-    const userProfile = await getUserProfile(userId);
-    const isCoach = userProfile?.isCoach || false;
-    
-    // Используем функцию для определения пропускаемых шагов (она учитывает все тренировки, включая неактивные)
-    const skipFlags = await getGroupTrainingSkipFlags(userId);
-    const trainerName = skipFlags.trainerName;
-    const trainerContact = skipFlags.trainerContact;
-    
-    // Отправляем вводное сообщение
-    await getBot().sendMessage(chatId, 
-      '🎾 <b>Расскажите о своей группе</b>\n' +
-      'Мы предложим её всем пользователям бота — это займёт <b>≈ 1 минуту.</b>\n\n' +
-      '👇 Заполните информацию о группе ниже.\n\n' +
-      '⚠️ <b>Важно:</b> если группа наберётся или станет неактуальной — не забудьте <b>отменить её в разделе «Мои тренировки».</b>',
-      {
-        parse_mode: 'HTML',
-        reply_markup: {
-          remove_keyboard: true
-        }
+
+    const createGroupMiniappBaseUrl = 'https://flight-space-surely-relaxation.trycloudflare.com/add-group';
+    const createGroupParams = new URLSearchParams();
+    createGroupParams.set('userId', String(userId));
+    const createGroupUsername = query.from?.username;
+    if (createGroupUsername) createGroupParams.set('username', createGroupUsername);
+    const createGroupUrl = `${createGroupMiniappBaseUrl}?${createGroupParams.toString()}`;
+
+    await getBot().sendMessage(chatId, 'Создание групповой тренировки проходит в приложении. Нажми кнопку ниже, чтобы открыть.', {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: '👥 Создать групповую тренировку', web_app: { url: createGroupUrl } }]]
       }
-    );
-    
-    // Определяем, какие шаги можно пропустить (используем данные из skipFlags)
-    const skipTrainerName = skipFlags.skipTrainerName;
-    const skipContact = skipFlags.skipContact;
-    const totalSteps = getTotalGroupTrainingSteps(skipTrainerName, skipContact);
-    
-    if (skipTrainerName) {
-      const draft = groupTrainingDrafts.get(userId) || {};
-      draft.trainerName = trainerName;
-      if (skipContact && trainerContact) {
-        draft.contact = trainerContact;
-      }
-      groupTrainingDrafts.set(userId, draft);
-      
-      // Переходим сразу к шагу 2: Название корта
-      groupTrainingStates.set(userId, GroupTrainingStep.COURT_NAME);
-      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.COURT_NAME, skipTrainerName, skipContact);
-      await getBot().sendMessage(chatId, 
-        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nГде проходит тренировка? Напишите название корта (пример - Спартак, крытый хард)`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: {
-            remove_keyboard: true
-          }
-        }
-      );
-    } else {
-      // Шаг 1: Имя тренера
-      groupTrainingStates.set(userId, GroupTrainingStep.TRAINER_NAME);
-      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.TRAINER_NAME, skipTrainerName, skipContact);
-      await getBot().sendMessage(chatId, 
-        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nКак к вам обращаться? (Ваше имя)`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: {
-            remove_keyboard: true
-          }
-        }
-      );
-    }
-    
+    });
     await safeAnswerCallbackQuery(query.id);
     return;
   }
 
-  // Обработка списка групповых тренировок
+  // Обработка списка групповых тренировок — открываем Mini App /my-groups
   if (data === 'group_training_list') {
-    const trainings = await getUserGroupTrainings(userId);
-    
-    if (trainings.length === 0) {
-      await safeEditMessageText(
-        'У вас пока нет активных групповых тренировок.',
-        {
-          chat_id: chatId,
-          message_id: query.message?.message_id,
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '👥 Создать тренировку', callback_data: 'group_training_create' }],
-              [{ text: '◀️ Назад', callback_data: 'action_home' }]
-            ]
-          }
-        }
-      );
-    } else {
-      let message = '📋 <b>Мои тренировки:</b>\n\n';
-      
-      trainings.forEach((training, index) => {
-        const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
-        message += `${index + 1}. <b>${training.courtName}</b>\n`;
-        message += `   📅 ${getDisplayDateTime(training)}\n`;
-        message += `   🎾 Уровень: ${levelLabel}\n`;
-        if (training.groupSize) {
-          message += `   👥 ${training.groupSize} чел.\n`;
-        }
-        message += `   💰 ${training.priceSingle}₽ за занятие\n`;
-        message += `   📱 ${training.contact}\n\n`;
-      });
-      
-      const keyboard: TelegramBot.InlineKeyboardButton[][] = trainings.map((training, index) => [
-        { text: `❌ Отменить "${training.courtName}"`, callback_data: `group_training_cancel_${training.id}` }
-      ]);
-      
-      keyboard.push([{ text: '👥 Создать новую', callback_data: 'group_training_create' }]);
-      keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
-      
-      await safeEditMessageText(
-        message,
-        {
-          chat_id: chatId,
-          message_id: query.message?.message_id,
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: keyboard
-          }
-        }
-      );
-    }
-    
+    const myGroupsMiniappBaseUrl = 'https://flight-space-surely-relaxation.trycloudflare.com/my-groups';
+    const myGroupsParams = new URLSearchParams();
+    myGroupsParams.set('userId', String(userId));
+    const myGroupsUsername = query.from?.username;
+    if (myGroupsUsername) myGroupsParams.set('username', myGroupsUsername);
+    const myGroupsUrl = `${myGroupsMiniappBaseUrl}?${myGroupsParams.toString()}`;
+
+    await getBot().sendMessage(chatId, 'Мои тренировки отображаются в приложении. Нажми кнопку ниже, чтобы открыть.', {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 Мои тренировки', web_app: { url: myGroupsUrl } }]]
+      }
+    });
     await safeAnswerCallbackQuery(query.id);
     return;
   }
