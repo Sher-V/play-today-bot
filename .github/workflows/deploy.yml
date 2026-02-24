@@ -3,6 +3,7 @@ name: Deploy to Google Cloud Functions
 on:
   push:
     branches:
+      - dev
       - master
       - main
 
@@ -13,8 +14,20 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+    # dev branch → environment "dev" (dev Firebase/GCP project, dev bot). master/main → "prod" (prod project, prod bot). Data fully isolated per environment.
+    environment: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') && 'prod' || 'dev' }}
+
     steps:
+      - name: Set deployment info
+        id: deploy-env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/master" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "target=prod" >> $GITHUB_OUTPUT
+            echo "🔵 Deploying to PROD (branch: ${{ github.ref_name }})"
+          else
+            echo "target=dev" >> $GITHUB_OUTPUT
+            echo "🟢 Deploying to DEV (branch: ${{ github.ref_name }})"
+          fi
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -258,7 +271,10 @@ jobs:
 
       - name: Deployment Summary
         run: |
-          echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          TARGET="${{ steps.deploy-env.outputs.target }}"
+          echo "## 🚀 Deployment Successful ($TARGET)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** \`$TARGET\` | **Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Deployed Functions:" >> $GITHUB_STEP_SUMMARY
           echo "- **Telegram Bot**: ${{ steps.get-urls.outputs.bot_url }}" >> $GITHUB_STEP_SUMMARY
