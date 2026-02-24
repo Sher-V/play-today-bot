@@ -55,6 +55,7 @@ jobs:
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          MINIAPP_BASE_URL: ${{ vars.MINIAPP_BASE_URL }}
           USE_BIGQUERY: ${{ secrets.USE_BIGQUERY }}
           BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
           BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
@@ -90,6 +91,9 @@ jobs:
           fi
           if [ -n "${YOOKASSA_SECRET_KEY}" ]; then
             ENV_VARS="${ENV_VARS},YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}"
+          fi
+          if [ -n "${MINIAPP_BASE_URL}" ]; then
+            ENV_VARS="${ENV_VARS},MINIAPP_BASE_URL=${MINIAPP_BASE_URL}"
           fi
           gcloud functions deploy playTodayBot \
             --gen2 \

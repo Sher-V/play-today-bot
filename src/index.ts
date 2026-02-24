@@ -30,7 +30,7 @@ import { USER_TEXTS } from './constants/user-texts';
 import { SportType, type Sport } from './constants/sport-constants';
 import { isBannedUser } from './constants/banned-user-ids';
 import { CITIES, canSelectCity, getCityByIndex, isMoscowCity, isVoronezhCity, DEFAULT_TIMEZONE, OFFSET_UTC3 } from './constants/cities';
-import { getCourtPrice, getBotToken, isDev } from './utils/config-utils';
+import { getCourtPrice, getBotToken, isDev, getMiniappBaseUrl } from './utils/config-utils';
 import { getTodayKeyInTimezone } from './utils/date-utils';
 import { getRemoteConfigValue } from './utils/remote-config';
 import { createYooKassaPayment, createYooKassaRefund, getYooKassaPaymentStatus } from './utils/yookassa';
@@ -5329,8 +5329,8 @@ async function handleMessage(msg: TelegramBot.Message) {
           });
         }
 
-        // Формируем ссылку на Mini App с параметрами пользователя (dev — отдельный хост)
-        const miniappBaseUrl = isDev ? 'https://flight-space-surely-relaxation.trycloudflare.com/' : 'https://play-today-miniapp.web.app/';
+        // Формируем ссылку на Mini App с параметрами пользователя (домен из MINIAPP_BASE_URL)
+        const miniappBaseUrl = getMiniappBaseUrl();
         const miniappParams = new URLSearchParams();
         if (userId) miniappParams.set('userId', String(userId));
         const tgUsername = msg.from?.username;
@@ -5349,7 +5349,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         });
       } catch (err) {
         console.error('[find_group] Error:', err);
-        const miniappBaseUrl = isDev ? 'https://flight-space-surely-relaxation.trycloudflare.com/' : 'https://play-today-miniapp.web.app/';
+        const miniappBaseUrl = getMiniappBaseUrl();
         const miniappParams = new URLSearchParams();
         if (userId) miniappParams.set('userId', String(userId));
         if (msg.from?.username) miniappParams.set('username', msg.from.username);
@@ -9738,7 +9738,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     groupTrainingStates.delete(userId);
     groupTrainingDrafts.delete(userId);
 
-    const createGroupMiniappBaseUrl = 'https://flight-space-surely-relaxation.trycloudflare.com/add-group';
+    const createGroupMiniappBaseUrl = `${getMiniappBaseUrl()}add-group`;
     const createGroupParams = new URLSearchParams();
     createGroupParams.set('userId', String(userId));
     const createGroupUsername = query.from?.username;
@@ -9757,7 +9757,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
 
   // Обработка списка групповых тренировок — открываем Mini App /my-groups
   if (data === 'group_training_list') {
-    const myGroupsMiniappBaseUrl = 'https://flight-space-surely-relaxation.trycloudflare.com/my-groups';
+    const myGroupsMiniappBaseUrl = `${getMiniappBaseUrl()}my-groups`;
     const myGroupsParams = new URLSearchParams();
     myGroupsParams.set('userId', String(userId));
     const myGroupsUsername = query.from?.username;

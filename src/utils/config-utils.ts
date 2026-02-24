@@ -7,6 +7,16 @@ import { getMoscowHour, isWeekend } from './date-utils';
 export const isDev = process.env.NODE_ENV === 'development';
 
 /**
+ * Базовый URL Mini App (подбор группы, создание/список тренировок).
+ * Если не задан — используется продовый домен.
+ * В .env задайте без завершающего слеша, например: https://play-today-miniapp-dev.web.app
+ */
+export function getMiniappBaseUrl(): string {
+  const url = process.env.MINIAPP_BASE_URL || 'https://play-today-miniapp.web.app';
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+/**
  * Получает токен бота в зависимости от окружения
  * @returns Bot token или null если не найден
  */
