@@ -112,6 +112,22 @@ function getCoachProfileInlineButton(): TelegramBot.InlineKeyboardButton {
     : { text: '🏆 Мой профиль тренера', url: profileUrl };
 }
 
+/** Кнопка добавления групповой тренировки — открывает Mini App /add-group */
+function getAddGroupInlineButton(text = '👥 Набираю групповую тренировку'): TelegramBot.InlineKeyboardButton {
+  const baseUrl = getMiniappBaseUrl();
+  const addGroupUrl = `${baseUrl}add-group`;
+  const isHttps = baseUrl.startsWith('https://');
+  return isHttps ? { text, web_app: { url: addGroupUrl } } : { text, url: addGroupUrl };
+}
+
+/** Кнопка «Мои тренировки» — открывает Mini App /my-groups */
+function getMyGroupsInlineButton(text = '📋 Мои тренировки'): TelegramBot.InlineKeyboardButton {
+  const baseUrl = getMiniappBaseUrl();
+  const myGroupsUrl = `${baseUrl}my-groups`;
+  const isHttps = baseUrl.startsWith('https://');
+  return isHttps ? { text, web_app: { url: myGroupsUrl } } : { text, url: myGroupsUrl };
+}
+
 /**
  * Загружает медиа файл в Cloud Storage
  * @param fileId - file_id от Telegram
@@ -4783,8 +4799,8 @@ async function handleMessage(msg: TelegramBot.Message) {
         // Формируем клавиатуру
         const keyboard: TelegramBot.InlineKeyboardButton[][] = [
           [
-            { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
-            { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+            getMyGroupsInlineButton(),
+            getAddGroupInlineButton('➕ Добавить группу')
           ]
         ];
         
@@ -4878,8 +4894,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       // Формируем клавиатуру
       const keyboard: TelegramBot.InlineKeyboardButton[][] = [
         [
-          { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
-          { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+          getMyGroupsInlineButton(),
+          getAddGroupInlineButton('➕ Добавить группу')
         ]
       ];
       
@@ -5257,8 +5273,8 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
       moreMenuKeyboard.push(
         isCoachForMenu ? [getCoachProfileInlineButton()] : [getRegisterCoachInlineButton()],
-        [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
-        [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
+        [getAddGroupInlineButton()],
+        [getMyGroupsInlineButton()],
         [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
         [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }]
       );
@@ -7502,7 +7518,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     moreMenuKeyboard.push(
       isCoachForMenu ? [getCoachProfileInlineButton()] : [getRegisterCoachInlineButton()],
       [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
-      [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
+      [getMyGroupsInlineButton()],
       [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
       [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }]
     );
@@ -7900,8 +7916,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Формируем клавиатуру
     const keyboard: TelegramBot.InlineKeyboardButton[][] = [
       [
-        { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
-        { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+        getMyGroupsInlineButton(),
+        getAddGroupInlineButton('➕ Добавить группу')
       ]
     ];
     
@@ -9746,42 +9762,23 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Обработка создания групповой тренировки — открываем Mini App
+  // Обработка создания групповой тренировки (legacy: старые сообщения с callback)
   if (data === 'group_training_create') {
     groupTrainingStates.delete(userId);
     groupTrainingDrafts.delete(userId);
-
-    const createGroupMiniappBaseUrl = `${getMiniappBaseUrl()}add-group`;
-    const createGroupParams = new URLSearchParams();
-    createGroupParams.set('userId', String(userId));
-    const createGroupUsername = query.from?.username;
-    if (createGroupUsername) createGroupParams.set('username', createGroupUsername);
-    const createGroupUrl = `${createGroupMiniappBaseUrl}?${createGroupParams.toString()}`;
-
     await getBot().sendMessage(chatId, 'Создание групповой тренировки проходит в приложении. Нажми кнопку ниже, чтобы открыть.', {
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [[{ text: '👥 Создать групповую тренировку', web_app: { url: createGroupUrl } }]]
-      }
+      reply_markup: { inline_keyboard: [[getAddGroupInlineButton('👥 Создать групповую тренировку')]] }
     });
     await safeAnswerCallbackQuery(query.id);
     return;
   }
 
-  // Обработка списка групповых тренировок — открываем Mini App /my-groups
+  // Обработка списка групповых тренировок (legacy: старые сообщения с callback)
   if (data === 'group_training_list') {
-    const myGroupsMiniappBaseUrl = `${getMiniappBaseUrl()}my-groups`;
-    const myGroupsParams = new URLSearchParams();
-    myGroupsParams.set('userId', String(userId));
-    const myGroupsUsername = query.from?.username;
-    if (myGroupsUsername) myGroupsParams.set('username', myGroupsUsername);
-    const myGroupsUrl = `${myGroupsMiniappBaseUrl}?${myGroupsParams.toString()}`;
-
     await getBot().sendMessage(chatId, 'Мои тренировки отображаются в приложении. Нажми кнопку ниже, чтобы открыть.', {
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [[{ text: '📋 Мои тренировки', web_app: { url: myGroupsUrl } }]]
-      }
+      reply_markup: { inline_keyboard: [[getMyGroupsInlineButton()]] }
     });
     await safeAnswerCallbackQuery(query.id);
     return;
@@ -9806,7 +9803,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             message_id: query.message?.message_id,
             reply_markup: {
               inline_keyboard: [
-                [{ text: '👥 Создать тренировку', callback_data: 'group_training_create' }],
+                [getAddGroupInlineButton('👥 Создать тренировку')],
                 [{ text: '◀️ Назад', callback_data: 'action_home' }]
               ]
             }
@@ -9831,7 +9828,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           { text: `❌ Отменить "${training.courtName}"`, callback_data: `group_training_cancel_${training.id}` }
         ]);
         
-        keyboard.push([{ text: '👥 Создать новую', callback_data: 'group_training_create' }]);
+        keyboard.push([getAddGroupInlineButton('👥 Создать новую')]);
         keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
         
         await safeEditMessageText(
@@ -10022,8 +10019,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Формируем клавиатуру
     const keyboard: TelegramBot.InlineKeyboardButton[][] = [
       [
-        { text: '📋 Мои тренировки', callback_data: 'group_training_list' },
-        { text: '➕ Добавить группу', callback_data: 'group_training_create' }
+        getMyGroupsInlineButton(),
+        getAddGroupInlineButton('➕ Добавить группу')
       ]
     ];
     
