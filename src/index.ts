@@ -92,6 +92,26 @@ const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
 // Storage инициализируем всегда (нужен для загрузки медиа тренеров)
 const storage = new Storage();
 
+/** Кнопка «Зарегистрироваться как тренер» — открывает Mini App /register-coach (userId в Telegram.WebApp.initData) */
+function getRegisterCoachInlineButton(): TelegramBot.InlineKeyboardButton {
+  const baseUrl = getMiniappBaseUrl();
+  const registerUrl = `${baseUrl}register-coach`;
+  const isHttps = baseUrl.startsWith('https://');
+  return isHttps
+    ? { text: '✅ Зарегистрироваться как тренер', web_app: { url: registerUrl } }
+    : { text: '✅ Зарегистрироваться как тренер', url: registerUrl };
+}
+
+/** Кнопка «Мой профиль тренера» — открывает Mini App /profile (userId в Telegram.WebApp.initData) */
+function getCoachProfileInlineButton(): TelegramBot.InlineKeyboardButton {
+  const baseUrl = getMiniappBaseUrl();
+  const profileUrl = `${baseUrl}profile`;
+  const isHttps = baseUrl.startsWith('https://');
+  return isHttps
+    ? { text: '🏆 Мой профиль тренера', web_app: { url: profileUrl } }
+    : { text: '🏆 Мой профиль тренера', url: profileUrl };
+}
+
 /**
  * Загружает медиа файл в Cloud Storage
  * @param fileId - file_id от Telegram
@@ -4769,7 +4789,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         ];
         
         if (!isCoach) {
-          keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+          keyboard.push([getRegisterCoachInlineButton()]);
         }
         
         keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
@@ -4865,7 +4885,7 @@ async function handleMessage(msg: TelegramBot.Message) {
       
       // Добавляем кнопку регистрации тренера только если профиля еще нет
       if (!isCoach) {
-        keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+        keyboard.push([getRegisterCoachInlineButton()]);
       }
       
       keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
@@ -5229,8 +5249,6 @@ async function handleMessage(msg: TelegramBot.Message) {
       // Получаем профиль для определения статуса тренера и города
       const userProfileForMenu = userId ? await getUserProfile(userId) : null;
       const isCoachForMenu = userProfileForMenu?.isCoach || false;
-      const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
-      const moreMenuCoachButtonData = isCoachForMenu ? 'coach_view_profile' : 'profile_toggle_coach';
       const showMyBookings = userProfileForMenu && isVoronezhCity(userProfileForMenu.city);
 
       const moreMenuKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
@@ -5238,7 +5256,7 @@ async function handleMessage(msg: TelegramBot.Message) {
         moreMenuKeyboard.push([{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]);
       }
       moreMenuKeyboard.push(
-        [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
+        isCoachForMenu ? [getCoachProfileInlineButton()] : [getRegisterCoachInlineButton()],
         [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
         [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
         [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
@@ -5440,15 +5458,14 @@ async function handleMessage(msg: TelegramBot.Message) {
       profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
       profileMessage += `Что хочешь сделать?`;
       
-      const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
-      const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
+      const coachButton = isCoach ? getCoachProfileInlineButton() : getRegisterCoachInlineButton();
       
       await getBot().sendMessage(chatId, profileMessage, {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
-            [{ text: coachButtonText, callback_data: coachButtonData }],
+            [coachButton],
             [{ text: '◀️ Назад', callback_data: 'action_home' }]
           ]
         }
@@ -7476,8 +7493,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     groupTrainingDrafts.delete(userId);
     const userProfileForMenu = await getUserProfile(userId);
     const isCoachForMenu = userProfileForMenu?.isCoach || false;
-    const moreMenuCoachButtonText = isCoachForMenu ? '🏆 Мой профиль тренера' : '✅ Зарегистрироваться как тренер';
-    const moreMenuCoachButtonData = isCoachForMenu ? 'coach_view_profile' : 'profile_toggle_coach';
     const showMyBookings = userProfileForMenu && isVoronezhCity(userProfileForMenu.city);
 
     const moreMenuKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
@@ -7485,7 +7500,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       moreMenuKeyboard.push([{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]);
     }
     moreMenuKeyboard.push(
-      [{ text: moreMenuCoachButtonText, callback_data: moreMenuCoachButtonData }],
+      isCoachForMenu ? [getCoachProfileInlineButton()] : [getRegisterCoachInlineButton()],
       [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
       [{ text: '📋 Мои тренировки', callback_data: 'group_training_list' }],
       [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
@@ -7674,8 +7689,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
     profileMessage += `Что хочешь сделать?`;
     
-    const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
-    const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
+    const coachButton = isCoach ? getCoachProfileInlineButton() : getRegisterCoachInlineButton();
     
     await safeEditMessageText(
       profileMessage,
@@ -7686,7 +7700,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         reply_markup: {
           inline_keyboard: [
             [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
-            [{ text: coachButtonText, callback_data: coachButtonData }],
+            [coachButton],
             [{ text: '◀️ Назад', callback_data: 'action_home' }]
           ]
         }
@@ -7892,7 +7906,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     ];
     
     if (!isCoach) {
-      keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+      keyboard.push([getRegisterCoachInlineButton()]);
     }
     
     keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
@@ -7933,8 +7947,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
     profileMessage += `Что хочешь сделать?`;
     
-    const coachButtonText = isCoach ? '🏆 Мой профиль тренера' : '🏆 Я тренер';
-    const coachButtonData = isCoach ? 'coach_view_profile' : 'profile_toggle_coach';
+    const coachButton = isCoach ? getCoachProfileInlineButton() : getRegisterCoachInlineButton();
     
     await safeEditMessageText(
       profileMessage,
@@ -7945,7 +7958,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         reply_markup: {
           inline_keyboard: [
             [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }],
-            [{ text: coachButtonText, callback_data: coachButtonData }],
+            [coachButton],
             [{ text: '◀️ Назад', callback_data: 'action_home' }]
           ]
         }
@@ -10016,15 +10029,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     // Добавляем кнопку регистрации тренера только если профиля еще нет
     if (!isCoach) {
-      keyboard.push([{ text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach_from_group' }]);
+      keyboard.push([getRegisterCoachInlineButton()]);
     }
     
     keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
     
-      // Формируем сообщение
-      let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
-      if (!isCoach) {
-        message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуальную</b> или <b>сплит-тренировку</b>.';
+    // Формируем сообщение
+    let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
+    if (!isCoach) {
+      message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуальную</b> или <b>сплит-тренировку</b>.';
       }
       message += '\n\n<i>Функциональность полностью бесплатна только на время тестового периода. Об изменениях сообщим дополнительно.</i>';
       
