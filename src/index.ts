@@ -92,7 +92,10 @@ const USE_LOCAL_STORAGE = USE_PROD_ACTUAL_SLOTS ? false : !BUCKET_NAME;
 // Storage инициализируем всегда (нужен для загрузки медиа тренеров)
 const storage = new Storage();
 
-/** Кнопка «Зарегистрироваться как тренер» — открывает Mini App /register-coach (userId в Telegram.WebApp.initData) */
+/** Ключ Remote Config: включить флоу с открытием Mini App (регистрация/профиль тренера, групповые тренировки). */
+const REMOTE_CONFIG_USE_MINIAPP_FLOW = 'use_miniapp_flow';
+
+/** Кнопка «Зарегистрироваться как тренер» — Mini App или callback в зависимости от флага */
 function getRegisterCoachInlineButton(): TelegramBot.InlineKeyboardButton {
   const baseUrl = getMiniappBaseUrl();
   const registerUrl = `${baseUrl}register-coach`;
@@ -102,7 +105,7 @@ function getRegisterCoachInlineButton(): TelegramBot.InlineKeyboardButton {
     : { text: '✅ Зарегистрироваться как тренер', url: registerUrl };
 }
 
-/** Кнопка «Мой профиль тренера» — открывает Mini App /profile (userId в Telegram.WebApp.initData) */
+/** Кнопка «Мой профиль тренера» — Mini App или callback */
 function getCoachProfileInlineButton(): TelegramBot.InlineKeyboardButton {
   const baseUrl = getMiniappBaseUrl();
   const profileUrl = `${baseUrl}profile`;
@@ -112,7 +115,7 @@ function getCoachProfileInlineButton(): TelegramBot.InlineKeyboardButton {
     : { text: '🏆 Мой профиль тренера', url: profileUrl };
 }
 
-/** Кнопка добавления групповой тренировки — открывает Mini App /add-group */
+/** Кнопка добавления групповой тренировки — Mini App или callback */
 function getAddGroupInlineButton(text = '👥 Набираю групповую тренировку'): TelegramBot.InlineKeyboardButton {
   const baseUrl = getMiniappBaseUrl();
   const addGroupUrl = `${baseUrl}add-group`;
@@ -120,12 +123,32 @@ function getAddGroupInlineButton(text = '👥 Набираю групповую 
   return isHttps ? { text, web_app: { url: addGroupUrl } } : { text, url: addGroupUrl };
 }
 
-/** Кнопка «Мои тренировки» — открывает Mini App /my-groups */
+/** Кнопка «Мои тренировки» — Mini App или callback */
 function getMyGroupsInlineButton(text = '📋 Мои тренировки'): TelegramBot.InlineKeyboardButton {
   const baseUrl = getMiniappBaseUrl();
   const myGroupsUrl = `${baseUrl}my-groups`;
   const isHttps = baseUrl.startsWith('https://');
   return isHttps ? { text, web_app: { url: myGroupsUrl } } : { text, url: myGroupsUrl };
+}
+
+/** Возвращает кнопку регистрации тренера: Mini App при useMiniappFlow, иначе callback */
+function getRegisterCoachButton(useMiniappFlow: boolean): TelegramBot.InlineKeyboardButton {
+  return useMiniappFlow ? getRegisterCoachInlineButton() : { text: '✅ Зарегистрироваться как тренер', callback_data: 'profile_toggle_coach' };
+}
+
+/** Возвращает кнопку профиля тренера: Mini App при useMiniappFlow, иначе callback */
+function getCoachProfileButton(useMiniappFlow: boolean): TelegramBot.InlineKeyboardButton {
+  return useMiniappFlow ? getCoachProfileInlineButton() : { text: '🏆 Мой профиль тренера', callback_data: 'coach_view_profile' };
+}
+
+/** Возвращает кнопку добавления группы: Mini App при useMiniappFlow, иначе callback */
+function getAddGroupButton(text: string, useMiniappFlow: boolean): TelegramBot.InlineKeyboardButton {
+  return useMiniappFlow ? getAddGroupInlineButton(text) : { text, callback_data: 'group_training_create' };
+}
+
+/** Возвращает кнопку «Мои тренировки»: Mini App при useMiniappFlow, иначе callback */
+function getMyGroupsButton(text: string, useMiniappFlow: boolean): TelegramBot.InlineKeyboardButton {
+  return useMiniappFlow ? getMyGroupsInlineButton(text) : { text, callback_data: 'group_training_list' };
 }
 
 /**
@@ -4795,33 +4818,25 @@ async function handleMessage(msg: TelegramBot.Message) {
         
         const userProfile = await getUserProfile(userId);
         const isCoach = userProfile?.isCoach || false;
-        
-        // Формируем клавиатуру
+        const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
         const keyboard: TelegramBot.InlineKeyboardButton[][] = [
           [
-            getMyGroupsInlineButton(),
-            getAddGroupInlineButton('➕ Добавить группу')
+            getMyGroupsButton('📋 Мои тренировки', useMiniappFlow),
+            getAddGroupButton('➕ Добавить группу', useMiniappFlow)
           ]
         ];
-        
         if (!isCoach) {
-          keyboard.push([getRegisterCoachInlineButton()]);
+          keyboard.push([getRegisterCoachButton(useMiniappFlow)]);
         }
-        
         keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
-        
-        // Формируем сообщение
         let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
         if (!isCoach) {
           message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуную</b> или <b>сплит-тренировку</b>.';
         }
         message += '\n\n<i>Функциональность полностью бесплатна только на время тестового периода. Об изменениях сообщим дополнительно.</i>';
-        
         await getBot().sendMessage(chatId, message, {
           parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: keyboard
-          }
+          reply_markup: { inline_keyboard: keyboard }
         });
         return;
       }
@@ -4887,21 +4902,17 @@ async function handleMessage(msg: TelegramBot.Message) {
       groupTrainingStates.delete(userId);
       groupTrainingDrafts.delete(userId);
       
-      // Проверяем, есть ли у пользователя профиль тренера
       const userProfile = await getUserProfile(userId);
       const isCoach = userProfile?.isCoach || false;
-      
-      // Формируем клавиатуру
+      const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
       const keyboard: TelegramBot.InlineKeyboardButton[][] = [
         [
-          getMyGroupsInlineButton(),
-          getAddGroupInlineButton('➕ Добавить группу')
+          getMyGroupsButton('📋 Мои тренировки', useMiniappFlow),
+          getAddGroupButton('➕ Добавить группу', useMiniappFlow)
         ]
       ];
-      
-      // Добавляем кнопку регистрации тренера только если профиля еще нет
       if (!isCoach) {
-        keyboard.push([getRegisterCoachInlineButton()]);
+        keyboard.push([getRegisterCoachButton(useMiniappFlow)]);
       }
       
       keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
@@ -5266,15 +5277,15 @@ async function handleMessage(msg: TelegramBot.Message) {
       const userProfileForMenu = userId ? await getUserProfile(userId) : null;
       const isCoachForMenu = userProfileForMenu?.isCoach || false;
       const showMyBookings = userProfileForMenu && isVoronezhCity(userProfileForMenu.city);
-
+      const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
       const moreMenuKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
       if (showMyBookings) {
         moreMenuKeyboard.push([{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]);
       }
       moreMenuKeyboard.push(
-        isCoachForMenu ? [getCoachProfileInlineButton()] : [getRegisterCoachInlineButton()],
-        [getAddGroupInlineButton()],
-        [getMyGroupsInlineButton()],
+        isCoachForMenu ? [getCoachProfileButton(useMiniappFlow)] : [getRegisterCoachButton(useMiniappFlow)],
+        [getAddGroupButton('👥 Набираю групповую тренировку', useMiniappFlow)],
+        [getMyGroupsButton('📋 Мои тренировки', useMiniappFlow)],
         [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
         [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }]
       );
@@ -5336,14 +5347,11 @@ async function handleMessage(msg: TelegramBot.Message) {
       break;
     case '👥 Найти группу': {
       try {
-        // Сбрасываем состояние заполнения анкеты тренера
         if (userId) {
           coachRegistrationStates.delete(userId);
           groupTrainingStates.delete(userId);
           groupTrainingDrafts.delete(userId);
         }
-
-        // Отслеживаем клик на текстовую кнопку
         if (userId) {
           trackButtonClick({
             userId,
@@ -5362,37 +5370,62 @@ async function handleMessage(msg: TelegramBot.Message) {
             console.error('Error tracking button click:', err);
           });
         }
-
-        // Формируем ссылку на Mini App с параметрами пользователя (домен из MINIAPP_BASE_URL)
-        const miniappBaseUrl = getMiniappBaseUrl();
-        const miniappParams = new URLSearchParams();
-        if (userId) miniappParams.set('userId', String(userId));
-        const tgUsername = msg.from?.username;
-        if (tgUsername) miniappParams.set('username', tgUsername);
-        const miniappUrl = miniappParams.toString() ? `${miniappBaseUrl}?${miniappParams.toString()}` : miniappBaseUrl;
-        // Telegram принимает web_app только по HTTPS; для localhost используем обычную ссылку, иначе sendMessage падает
-        const isHttps = miniappBaseUrl.startsWith('https://');
-        const button = isHttps
-          ? { text: '👥 Открыть подбор группы', web_app: { url: miniappUrl } }
-          : { text: '👥 Открыть подбор группы', url: miniappUrl };
-
-        await getBot().sendMessage(chatId, 'Подбор группы проходит в интерактивном формате. Нажми кнопку ниже, чтобы открыть в приложении.', {
-          reply_markup: {
-            inline_keyboard: [[button]]
+        const useMiniappFlowFindGroup = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
+        if (useMiniappFlowFindGroup) {
+          const miniappBaseUrl = getMiniappBaseUrl();
+          const miniappParams = new URLSearchParams();
+          if (userId) miniappParams.set('userId', String(userId));
+          const tgUsername = msg.from?.username;
+          if (tgUsername) miniappParams.set('username', tgUsername);
+          const miniappUrl = miniappParams.toString() ? `${miniappBaseUrl}?${miniappParams.toString()}` : miniappBaseUrl;
+          const isHttps = miniappBaseUrl.startsWith('https://');
+          const button = isHttps
+            ? { text: '👥 Открыть подбор группы', web_app: { url: miniappUrl } }
+            : { text: '👥 Открыть подбор группы', url: miniappUrl };
+          await getBot().sendMessage(chatId, 'Подбор группы проходит в интерактивном формате. Нажми кнопку ниже, чтобы открыть в приложении.', {
+            reply_markup: { inline_keyboard: [[button]] }
+          });
+        } else {
+          // Старый вид: список доступных групповых тренировок в боте
+          const rawTrainings = await getAllActiveGroupTrainings();
+          const allTrainings = interleaveGroupTrainingsByTrainer(rawTrainings);
+          if (allTrainings.length === 0) {
+            await getBot().sendMessage(chatId, 'К сожалению, сейчас нет активных групповых тренировок.', {
+              reply_markup: {
+                inline_keyboard: [[{ text: '🏠 В главное меню', callback_data: 'action_home' }]]
+              }
+            });
+          } else {
+            await showGroupTrainingsPage(chatId, allTrainings, 1);
           }
-        });
+        }
       } catch (err) {
         console.error('[find_group] Error:', err);
-        const miniappBaseUrl = getMiniappBaseUrl();
-        const miniappParams = new URLSearchParams();
-        if (userId) miniappParams.set('userId', String(userId));
-        if (msg.from?.username) miniappParams.set('username', msg.from.username);
-        const miniappUrl = miniappParams.toString() ? `${miniappBaseUrl}?${miniappParams.toString()}` : miniappBaseUrl;
-        await getBot().sendMessage(chatId, 'Подбор группы проходит в интерактивном формате. Нажми кнопку ниже, чтобы открыть в приложении.', {
-          reply_markup: {
-            inline_keyboard: [[{ text: '👥 Открыть подбор группы', url: miniappUrl }]]
+        const useMiniappFlowFindGroup = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
+        if (useMiniappFlowFindGroup) {
+          const miniappBaseUrl = getMiniappBaseUrl();
+          const miniappParams = new URLSearchParams();
+          if (userId) miniappParams.set('userId', String(userId));
+          if (msg.from?.username) miniappParams.set('username', msg.from.username);
+          const miniappUrl = miniappParams.toString() ? `${miniappBaseUrl}?${miniappParams.toString()}` : miniappBaseUrl;
+          const isHttps = miniappBaseUrl.startsWith('https://');
+          const button = isHttps
+            ? { text: '👥 Открыть подбор группы', web_app: { url: miniappUrl } }
+            : { text: '👥 Открыть подбор группы', url: miniappUrl };
+          await getBot().sendMessage(chatId, 'Подбор группы проходит в интерактивном формате. Нажми кнопку ниже, чтобы открыть в приложении.', {
+            reply_markup: { inline_keyboard: [[button]] }
+          });
+        } else {
+          const rawTrainings = await getAllActiveGroupTrainings();
+          const allTrainings = interleaveGroupTrainingsByTrainer(rawTrainings);
+          if (allTrainings.length === 0) {
+            await getBot().sendMessage(chatId, 'К сожалению, сейчас нет активных групповых тренировок.', {
+              reply_markup: { inline_keyboard: [[{ text: '🏠 В главное меню', callback_data: 'action_home' }]] }
+            });
+          } else {
+            await showGroupTrainingsPage(chatId, allTrainings, 1);
           }
-        });
+        }
       }
       break;
     }
@@ -5466,16 +5499,13 @@ async function handleMessage(msg: TelegramBot.Message) {
       const profileName = profileData?.name || msg.from?.first_name || 'друг';
       const favoriteCourtsCount = profileData?.favorites?.length || 0;
       const isCoach = profileData?.isCoach || false;
-      
-      // Формируем сообщение профиля
+      const useMiniappFlowProfile = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
       let profileMessage = `👤 *Профиль*\n\n`;
       profileMessage += `Имя: ${profileName}\n`;
       profileMessage += `Избранных кортов: ${favoriteCourtsCount}\n`;
       profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
       profileMessage += `Что хочешь сделать?`;
-      
-      const coachButton = isCoach ? getCoachProfileInlineButton() : getRegisterCoachInlineButton();
-      
+      const coachButton = isCoach ? getCoachProfileButton(useMiniappFlowProfile) : getRegisterCoachButton(useMiniappFlowProfile);
       await getBot().sendMessage(chatId, profileMessage, {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -7510,15 +7540,15 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const userProfileForMenu = await getUserProfile(userId);
     const isCoachForMenu = userProfileForMenu?.isCoach || false;
     const showMyBookings = userProfileForMenu && isVoronezhCity(userProfileForMenu.city);
-
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
     const moreMenuKeyboard: TelegramBot.InlineKeyboardButton[][] = [];
     if (showMyBookings) {
       moreMenuKeyboard.push([{ text: '📅 Мои бронирования', callback_data: 'my_bookings' }]);
     }
     moreMenuKeyboard.push(
-      isCoachForMenu ? [getCoachProfileInlineButton()] : [getRegisterCoachInlineButton()],
-      [{ text: '👥 Набираю групповую тренировку', callback_data: 'group_training_create' }],
-      [getMyGroupsInlineButton()],
+      isCoachForMenu ? [getCoachProfileButton(useMiniappFlow)] : [getRegisterCoachButton(useMiniappFlow)],
+      [getAddGroupButton('👥 Набираю групповую тренировку', useMiniappFlow)],
+      [getMyGroupsButton('📋 Мои тренировки', useMiniappFlow)],
       [{ text: '🏓 Найти корт (падел)', callback_data: 'find_padel_court' }],
       [{ text: '⭐ Избранные корты', callback_data: 'profile_favorites' }]
     );
@@ -7704,9 +7734,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     profileMessage += `Избранных кортов: ${favoriteCourtsCount}\n`;
     profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
     profileMessage += `Что хочешь сделать?`;
-    
-    const coachButton = isCoach ? getCoachProfileInlineButton() : getRegisterCoachInlineButton();
-    
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
+    const coachButton = isCoach ? getCoachProfileButton(useMiniappFlow) : getRegisterCoachButton(useMiniappFlow);
     await safeEditMessageText(
       profileMessage,
       {
@@ -7722,12 +7751,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         }
       }
     );
-    
     await safeAnswerCallbackQuery(query.id);
     return;
   }
 
-  // Обработка кнопки "Избранные корты" из профиля
   if (data === 'profile_favorites') {
     // Сбрасываем состояние заполнения анкеты тренера
     coachRegistrationStates.delete(userId);
@@ -7912,19 +7939,16 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
   if (data === 'group_training_success_back') {
     const userProfile = await getUserProfile(userId);
     const isCoach = userProfile?.isCoach || false;
-    
-    // Формируем клавиатуру
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
     const keyboard: TelegramBot.InlineKeyboardButton[][] = [
       [
-        getMyGroupsInlineButton(),
-        getAddGroupInlineButton('➕ Добавить группу')
+        getMyGroupsButton('📋 Мои тренировки', useMiniappFlow),
+        getAddGroupButton('➕ Добавить группу', useMiniappFlow)
       ]
     ];
-    
     if (!isCoach) {
-      keyboard.push([getRegisterCoachInlineButton()]);
+      keyboard.push([getRegisterCoachButton(useMiniappFlow)]);
     }
-    
     keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
     
     // Формируем сообщение
@@ -7956,14 +7980,13 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     const profileName = userProfile.name || query.from.first_name || 'друг';
     const favoriteCourtsCount = userProfile.favorites?.length || 0;
     const isCoach = userProfile.isCoach || false;
-    
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
     let profileMessage = `👤 *Профиль*\n\n`;
     profileMessage += `Имя: ${profileName}\n`;
     profileMessage += `Избранных кортов: ${favoriteCourtsCount}\n`;
     profileMessage += `Статус: ${isCoach ? '🏆 Тренер' : 'Игрок'}\n\n`;
     profileMessage += `Что хочешь сделать?`;
-    
-    const coachButton = isCoach ? getCoachProfileInlineButton() : getRegisterCoachInlineButton();
+    const coachButton = isCoach ? getCoachProfileButton(useMiniappFlow) : getRegisterCoachButton(useMiniappFlow);
     
     await safeEditMessageText(
       profileMessage,
@@ -9762,24 +9785,105 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     return;
   }
 
-  // Обработка создания групповой тренировки (legacy: старые сообщения с callback)
   if (data === 'group_training_create') {
     groupTrainingStates.delete(userId);
     groupTrainingDrafts.delete(userId);
-    await getBot().sendMessage(chatId, 'Создание групповой тренировки проходит в приложении. Нажми кнопку ниже, чтобы открыть.', {
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: [[getAddGroupInlineButton('👥 Создать групповую тренировку')]] }
-    });
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
+    if (useMiniappFlow) {
+      await getBot().sendMessage(chatId, 'Создание групповой тренировки проходит в приложении. Нажми кнопку ниже, чтобы открыть.', {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[getAddGroupInlineButton('👥 Создать групповую тренировку')]] }
+      });
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    // Старый вид: пошаговое создание тренировки в боте
+    const skipFlags = await getGroupTrainingSkipFlags(userId);
+    const mainMenuKeyboard = await getMainMenuKeyboard();
+    if (skipFlags.skipTrainerName && skipFlags.trainerName) {
+      const draft = groupTrainingDrafts.get(userId) || {};
+      draft.trainerName = skipFlags.trainerName;
+      groupTrainingDrafts.set(userId, draft);
+      groupTrainingStates.set(userId, GroupTrainingStep.COURT_NAME);
+      const totalSteps = getTotalGroupTrainingSteps(true, skipFlags.skipContact);
+      const currentStepNum = getCurrentStepNumber(GroupTrainingStep.COURT_NAME, true, skipFlags.skipContact);
+      await getBot().sendMessage(chatId,
+        `<b>Шаг ${currentStepNum} из ${totalSteps}</b>\n\nГде проходит тренировка? Напишите название корта (пример - Спартак, крытый хард)`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { keyboard: mainMenuKeyboard, resize_keyboard: true }
+        }
+      );
+    } else {
+      groupTrainingStates.set(userId, GroupTrainingStep.TRAINER_NAME);
+      const totalSteps = getTotalGroupTrainingSteps(false, skipFlags.skipContact);
+      await getBot().sendMessage(chatId,
+        `<b>Шаг 1 из ${totalSteps}</b>\n\nКак к тебе обращаться? Напишите ваше имя для отображения в объявлении.`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { keyboard: mainMenuKeyboard, resize_keyboard: true }
+        }
+      );
+    }
     await safeAnswerCallbackQuery(query.id);
     return;
   }
 
-  // Обработка списка групповых тренировок (legacy: старые сообщения с callback)
   if (data === 'group_training_list') {
-    await getBot().sendMessage(chatId, 'Мои тренировки отображаются в приложении. Нажми кнопку ниже, чтобы открыть.', {
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: [[getMyGroupsInlineButton()]] }
-    });
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
+    if (useMiniappFlow) {
+      await getBot().sendMessage(chatId, 'Мои тренировки отображаются в приложении. Нажми кнопку ниже, чтобы открыть.', {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[getMyGroupsInlineButton()]] }
+      });
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+    // Старый вид: список тренировок в боте
+    const trainings = await getUserGroupTrainings(userId);
+    const useMiniappFlowKeyboard = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
+    if (trainings.length === 0) {
+      await safeEditMessageText(
+        'У вас пока нет активных групповых тренировок.',
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [getAddGroupButton('👥 Создать тренировку', useMiniappFlowKeyboard)],
+              [{ text: '◀️ Назад', callback_data: 'action_home' }]
+            ]
+          }
+        }
+      );
+    } else {
+      let message = '📋 <b>Мои тренировки:</b>\n\n';
+      trainings.forEach((training, index) => {
+        const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
+        message += `${index + 1}. <b>${training.courtName}</b>\n`;
+        message += `   📅 ${getDisplayDateTime(training)}\n`;
+        message += `   🎾 Уровень: ${levelLabel}\n`;
+        if (training.groupSize) {
+          message += `   👥 ${training.groupSize} чел.\n`;
+        }
+        message += `   💰 ${training.priceSingle}₽ за занятие\n`;
+        message += `   📱 ${training.contact}\n\n`;
+      });
+      const keyboard: TelegramBot.InlineKeyboardButton[][] = trainings.map((training) => [
+        { text: `❌ Отменить "${training.courtName}"`, callback_data: `group_training_cancel_${training.id}` }
+      ]);
+      keyboard.push([getAddGroupButton('👥 Создать новую', useMiniappFlowKeyboard)]);
+      keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
+      await safeEditMessageText(
+        message,
+        {
+          chat_id: chatId,
+          message_id: query.message?.message_id,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: keyboard }
+        }
+      );
+    }
     await safeAnswerCallbackQuery(query.id);
     return;
   }
@@ -9791,10 +9895,8 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     
     if (success) {
       await safeAnswerCallbackQuery(query.id, { text: 'Тренировка отменена' });
-      
-      // Обновляем список тренировок
       const trainings = await getUserGroupTrainings(userId);
-      
+      const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
       if (trainings.length === 0) {
         await safeEditMessageText(
           'У вас пока нет активных групповых тренировок.',
@@ -9803,7 +9905,7 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
             message_id: query.message?.message_id,
             reply_markup: {
               inline_keyboard: [
-                [getAddGroupInlineButton('👥 Создать тренировку')],
+                [getAddGroupButton('👥 Создать тренировку', useMiniappFlow)],
                 [{ text: '◀️ Назад', callback_data: 'action_home' }]
               ]
             }
@@ -9811,7 +9913,6 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
         );
       } else {
         let message = '📋 <b>Мои тренировки:</b>\n\n';
-        
         trainings.forEach((training, index) => {
           const levelLabel = groupTrainingLevelLabels[training.level] || training.level;
           message += `${index + 1}. <b>${training.courtName}</b>\n`;
@@ -9823,12 +9924,10 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
           message += `   💰 ${training.priceSingle}₽ за занятие\n`;
           message += `   📱 ${training.contact}\n\n`;
         });
-        
         const keyboard: TelegramBot.InlineKeyboardButton[][] = trainings.map((training) => [
           { text: `❌ Отменить "${training.courtName}"`, callback_data: `group_training_cancel_${training.id}` }
         ]);
-        
-        keyboard.push([getAddGroupInlineButton('👥 Создать новую')]);
+        keyboard.push([getAddGroupButton('👥 Создать новую', useMiniappFlow)]);
         keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
         
         await safeEditMessageText(
@@ -10015,37 +10114,26 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
     // Проверяем, есть ли у пользователя профиль тренера
     const userProfile = await getUserProfile(userId);
     const isCoach = userProfile?.isCoach || false;
-    
-    // Формируем клавиатуру
+    const useMiniappFlow = await getRemoteConfigValue(REMOTE_CONFIG_USE_MINIAPP_FLOW, false);
     const keyboard: TelegramBot.InlineKeyboardButton[][] = [
       [
-        getMyGroupsInlineButton(),
-        getAddGroupInlineButton('➕ Добавить группу')
+        getMyGroupsButton('📋 Мои тренировки', useMiniappFlow),
+        getAddGroupButton('➕ Добавить группу', useMiniappFlow)
       ]
     ];
-    
-    // Добавляем кнопку регистрации тренера только если профиля еще нет
     if (!isCoach) {
-      keyboard.push([getRegisterCoachInlineButton()]);
+      keyboard.push([getRegisterCoachButton(useMiniappFlow)]);
     }
-    
     keyboard.push([{ text: '◀️ Назад', callback_data: 'action_home' }]);
-    
-    // Формируем сообщение
     let message = 'Спасибо🙂 Группа уже добавлена и видна пользователям — ждите заявки!';
     if (!isCoach) {
       message += '\n\nЕщё предлагаем зарегистрироваться как тренер (≈2 минуты), и мы будем отображать вас в <b>основном списке</b> тренеров. Сейчас бесплатно)\n\nПользователи бота смогут найти вас в главном поиске и оставить заявку на <b>индивидуальную</b> или <b>сплит-тренировку</b>.';
-      }
-      message += '\n\n<i>Функциональность полностью бесплатна только на время тестового периода. Об изменениях сообщим дополнительно.</i>';
-      
-      // Отправляем финальное сообщение
-      await getBot().sendMessage(chatId, message, {
+    }
+    message += '\n\n<i>Функциональность полностью бесплатна только на время тестового периода. Об изменениях сообщим дополнительно.</i>';
+    await getBot().sendMessage(chatId, message, {
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: keyboard
-      }
+      reply_markup: { inline_keyboard: keyboard }
     });
-    
     await safeAnswerCallbackQuery(query.id);
     return;
   }
