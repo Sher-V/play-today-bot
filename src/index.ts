@@ -6,7 +6,7 @@ import { Firestore } from '@google-cloud/firestore';
 import { CloudTasksClient } from '@google-cloud/tasks';
 import * as fs from 'fs';
 import * as path from 'path';
-import { trackButtonClick, generateSessionId, parseButtonType } from './analytics';
+import { trackButtonClick, generateSessionId, parseButtonType, findUserChatIdByUsername } from './analytics';
 import {
   TENNIS_COURT_NAMES,
   TENNIS_COURT_LINKS,
@@ -463,7 +463,14 @@ interface UserProfile {
 }
 
 // Инициализация Firestore
-const firestore = new Firestore();
+const firestoreProjectId =
+  isDev ? process.env.GCP_PROJECT_ID_DEV || process.env.FIREBASE_PROJECT_ID_DEV : process.env.GCP_PROJECT_ID_PROD;
+
+if (firestoreProjectId) {
+  console.log(`[firestore] Using projectId=${firestoreProjectId}`);
+}
+
+const firestore = firestoreProjectId ? new Firestore({ projectId: firestoreProjectId }) : new Firestore();
 
 // Коллекция пользователей в Firestore
 const USERS_COLLECTION = 'users';
@@ -7412,6 +7419,81 @@ async function handleCallbackQuery(query: TelegramBot.CallbackQuery) {
       return;
     }
     // Hold-бронь уже создана при показе экрана подтверждения
+
+    // Получаем настройки клуба, чтобы понять, как обрабатывать оплату
+    let club: Club | null = null;
+    try {
+      const clubDoc = await firestore.collection(CLUBS_COLLECTION).doc(res.clubId).get();
+      if (clubDoc.exists) {
+        club = clubDoc.data() as Club;
+      }
+    } catch (e) {
+      console.error('[voronezh_pay] Failed to load club', res.clubId, e);
+    }
+
+    // Вариант оплаты через расчётный счёт (bank_account):
+    // - не создаём платёж в ЮKassa
+    // - отправляем пользователю ссылку paymentLinks['regular']
+    // - просим оплатить нужную сумму и написать администратору клуба
+    if (club && club.paymentIntegration === 'bank_account' && club.paymentLinks?.regular) {
+      const adminUsernameRaw = club.telegramAdmin;
+      const adminMention = adminUsernameRaw ? `@${adminUsernameRaw.replace(/^@/, '')}` : 'администратору клуба';
+
+      const textLines: string[] = [];
+      textLines.push('⏳ Время на корт зарезервировано.');
+      textLines.push('');
+      textLines.push(`💳 *Оплата по расчётному счёту*`);
+      textLines.push(`Сумма к оплате: *${res.price} ₽*.`);
+      textLines.push('');
+      textLines.push('Перейдите по ссылке и оплатите нужную сумму:');
+      textLines.push(club.paymentLinks.regular);
+      textLines.push('');
+      textLines.push(`После оплаты отправьте сообщение ${adminMention} в Telegram с просьбой проверить успешность оплаты.`);
+
+      await safeEditMessageText(textLines.join('\n'), {
+        chat_id: chatId,
+        message_id: query.message?.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '◀️ Назад в Еще', callback_data: 'more_menu' }],
+          ],
+        },
+      });
+
+      // Пытаемся уведомить администратора о новой брони (если можем найти его по нику в button_clicks)
+      if (adminUsernameRaw) {
+        try {
+          const adminUsername = adminUsernameRaw.replace(/^@/, '');
+          const adminChatId = await findUserChatIdByUsername(adminUsername);
+          if (adminChatId) {
+            const userUsername = query.from?.username ? `@${query.from.username}` : undefined;
+            const userLabel = userUsername || `пользователь с id ${userId}`;
+            const adminTextLines: string[] = [];
+            adminTextLines.push('🔔 Новая бронь по оплате через расчётный счёт.');
+            adminTextLines.push('');
+            adminTextLines.push(`Клуб: ${res.clubName}`);
+            adminTextLines.push(`Дата и время: ${res.date} ${res.slotStart}`);
+            adminTextLines.push(`Длительность: ${res.durationMinutes} мин`);
+            adminTextLines.push(`Сумма: ${res.price} ₽`);
+            adminTextLines.push('');
+            adminTextLines.push(`Клиент: ${userLabel}`);
+            adminTextLines.push('');
+            adminTextLines.push('Клиенту отправлена ссылка на оплату по расчётному счёту и инструкция написать вам после оплаты.');
+            await getBot().sendMessage(adminChatId, adminTextLines.join('\n'));
+          } else {
+            console.log('[voronezh_pay] Admin chat not found for username', adminUsername);
+          }
+        } catch (e) {
+          console.error('[voronezh_pay] Failed to notify admin about bank_account booking', e);
+        }
+      }
+
+      await safeAnswerCallbackQuery(query.id);
+      return;
+    }
+
+    // По умолчанию — стандартный флоу с оплатой через ЮKassa
     const description = `Бронирование корта: ${res.clubName}, ${res.date} ${res.slotStart}, ${res.durationMinutes} мин`;
     const botUsername = process.env.BOT_USERNAME || 'play_today_bot';
     const returnUrl = `https://t.me/${botUsername}?start=paid_${reservationId}`;
