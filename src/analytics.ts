@@ -27,6 +27,49 @@ if (USE_BIGQUERY && BIGQUERY_PROJECT_ID) {
 }
 
 /**
+ * Находит последний chatId пользователя по его Telegram username в таблице button_clicks.
+ * Username хранится в JSON-поле context, поэтому используем JSON_EXTRACT_SCALAR(context, '$.username').
+ * Используется для поиска админов клубов по нику (telegramAdmin).
+ */
+export async function findUserChatIdByUsername(username: string): Promise<number | null> {
+  if (!bigquery || !USE_BIGQUERY) {
+    console.log('[analytics] findUserChatIdByUsername: BigQuery is disabled');
+    return null;
+  }
+
+  const normalizedUsername = username.replace(/^@/, '');
+
+  const query = `
+    SELECT chatId
+    FROM \`${BIGQUERY_PROJECT_ID}.${BIGQUERY_DATASET_ID}.${BIGQUERY_TABLE_ID}\`
+    WHERE JSON_EXTRACT_SCALAR(context, '$.username') = @username
+    ORDER BY timestamp DESC
+    LIMIT 1
+  `;
+
+  try {
+    const [job] = await bigquery.createQueryJob({
+      query,
+      params: { username: normalizedUsername },
+    });
+    const [rows] = await job.getQueryResults();
+    if (!rows || rows.length === 0) {
+      console.log('[analytics] findUserChatIdByUsername: no rows for', normalizedUsername);
+      return null;
+    }
+    const row = rows[0] as { chatId?: number };
+    if (!row.chatId) {
+      console.log('[analytics] findUserChatIdByUsername: row without chatId for', normalizedUsername);
+      return null;
+    }
+    return Number(row.chatId);
+  } catch (error) {
+    console.error('[analytics] Error in findUserChatIdByUsername', error);
+    return null;
+  }
+}
+
+/**
  * Интерфейс события клика на кнопку
  */
 export interface ButtonClickEvent {
